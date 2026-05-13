@@ -1,0 +1,11 @@
+target/
+Cargo.lock
+bin/
+dist/
+.DS_Store
+.env
+.voidnet/
+*.log
+*.db
+*.sqlite
+

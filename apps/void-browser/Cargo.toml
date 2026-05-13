@@ -1,0 +1,28 @@
+[package]
+name = "void-browser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+desktop-shell = ["dep:tauri"]
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.0", features = [], optional = true }
+thiserror.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+void-dns = { path = "../../core/dns" }
+void-identity = { path = "../../core/identity" }
+void-protocol = { path = "../../core/protocol" }
+void-runtime = { path = "../../core/runtime" }
+void-transport = { path = "../../core/transport" }
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }

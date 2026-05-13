@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VOIDBrowser</title>
+    <link rel="stylesheet" href="./app.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="browser-chrome">
+        <div class="chrome-left">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span>
+            <span></span>
+          </div>
+          <div class="brand-block">
+            <div class="brand-label">VOIDBROWSER</div>
+            <div class="brand-subtitle">graphical runtime shell</div>
+          </div>
+        </div>
+
+        <div class="chrome-middle">
+          <div id="chrome-status-pill" class="running-pill">
+            <span class="live-dot"></span>
+            <span id="chrome-status-label">RUNNING</span>
+          </div>
+
+          <div class="nav-control-row">
+            <button class="icon-button" type="button" aria-label="Back" disabled>←</button>
+            <button class="icon-button" type="button" aria-label="Forward" disabled>→</button>
+            <button id="refresh-button" class="icon-button" type="button" aria-label="Refresh">↻</button>
+          </div>
+
+          <form id="nav-form" class="nav-form">
+            <div class="address-shell">
+              <span class="address-lock" aria-hidden="true">✦</span>
+              <input id="route-input" class="route-input" type="text" value="void://chat.void" spellcheck="false" />
+            </div>
+          </form>
+        </div>
+
+        <div class="chrome-right">
+          <button class="primary-action" type="submit" form="nav-form">Mount</button>
+          <button type="button" id="sync-button" class="ghost-action">Sync</button>
+
+          <div class="node-pill">
+            <div class="node-avatar" aria-hidden="true">◌</div>
+            <div class="node-copy">
+              <div class="node-kicker">NODE</div>
+              <div id="chrome-node-value" class="node-value">helio@void</div>
+            </div>
+            <span class="online-dot"></span>
+          </div>
+
+          <button class="icon-button menu-button" type="button" aria-label="Menu">⋮</button>
+        </div>
+      </header>
+
+      <main class="workspace-grid">
+        <aside class="nav-rail">
+          <div class="rail-main">
+            <button class="rail-item active" data-rail="runtime" type="button">
+              <span class="rail-glyph">⌂</span>
+              <span>Runtime</span>
+            </button>
+            <button class="rail-item" data-rail="chat" type="button">
+              <span class="rail-glyph">◫</span>
+              <span>Chat</span>
+            </button>
+            <button class="rail-item" data-rail="gateways" type="button">
+              <span class="rail-glyph">◎</span>
+              <span>Gateways</span>
+            </button>
+            <button class="rail-item" data-rail="peers" type="button">
+              <span class="rail-glyph">◌</span>
+              <span>Peers</span>
+            </button>
+            <button class="rail-item" data-rail="logs" type="button">
+              <span class="rail-glyph">▤</span>
+              <span>Logs</span>
+            </button>
+          </div>
+
+          <div class="rail-footer">
+            <section class="rail-card">
+              <div class="rail-card-title">NODE ID</div>
+              <div id="rail-node-id" class="rail-card-value mono">unresolved-node</div>
+            </section>
+
+            <section class="rail-card">
+              <div class="rail-card-title">NETWORK</div>
+              <div class="network-row">
+                <span class="online-dot"></span>
+                <span id="rail-network-status">Connected</span>
+              </div>
+              <div id="rail-network-copy" class="rail-card-copy">0 peers · 0 gateways</div>
+            </section>
+
+            <section class="rail-card rail-version-card">
+              <div class="rail-card-title">VOIDNET v0.1.0</div>
+              <div class="rail-card-copy">alpha build</div>
+            </section>
+          </div>
+        </aside>
+
+        <section class="main-stage">
+          <div class="surface-shell">
+            <div class="surface-shell-header">
+              <div class="surface-shell-copy">
+                <div class="surface-kicker">MOUNTED SURFACE</div>
+                <div class="surface-heading-row">
+                  <h1 id="surface-title" class="surface-title">No active surface</h1>
+                  <span id="surface-active-badge" class="active-badge hidden">ACTIVE</span>
+                </div>
+              </div>
+              <div class="surface-shell-actions">
+                <button id="raw-surface-toggle" class="ghost-action" type="button">View Raw Surface</button>
+                <div id="error-banner" class="error-banner hidden"></div>
+              </div>
+            </div>
+
+            <div id="surface-meta" class="surface-meta"></div>
+            <div id="surface-root" class="surface-root"></div>
+          </div>
+        </section>
+
+        <aside class="inspector-shell">
+          <div class="inspector-header">
+            <div class="inspector-kicker">RUNTIME INSPECTOR</div>
+            <div id="inspector-summary" class="inspector-summary">no active diagnostics</div>
+          </div>
+
+          <section class="inspector-panel prompts-panel">
+            <div class="panel-header-row">
+              <div class="panel-title">PERMISSION PROMPTS</div>
+              <div id="prompt-count-badge" class="count-badge">0</div>
+            </div>
+            <div id="prompts-root" class="stack"></div>
+          </section>
+
+          <section class="inspector-panel diagnostics-panel diagnostics">
+            <div class="panel-title">DIAGNOSTICS</div>
+            <div id="diagnostics-root" class="diag-grid"></div>
+          </section>
+
+          <section class="inspector-panel events-panel">
+            <div class="panel-header-row">
+              <div class="panel-title">EVENT BRIDGE</div>
+              <div class="live-chip">
+                <span class="live-dot pulse-dot"></span>
+                <span>LIVE</span>
+              </div>
+            </div>
+            <div id="events-root" class="events-root"></div>
+            <div class="events-footer">
+              <label class="checkbox-row">
+                <input id="events-autoscroll" type="checkbox" checked />
+                <span>Auto-scroll</span>
+              </label>
+            </div>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,80 @@
+page {
+  title "VOIDChat"
+
+  column {
+    text "VOIDChat distributed runtime"
+    text bind="chat.status"
+    spacer size="1"
+
+    text "Current Room"
+    text bind="chat.current_room"
+    text bind="chat.unread_count"
+    text bind="chat.connected_peers"
+    spacer size="1"
+
+    text "Peer"
+    input id="peer_id" placeholder="12D3K..."
+
+    text "Room"
+    input id="room" placeholder="operators"
+
+    text "Message"
+    input id="message" placeholder="Send to current room or direct peer"
+
+    row {
+      button {
+        label "Send"
+        action "chat.send"
+      }
+
+      button {
+        label "Refresh"
+        action "surface.refresh"
+      }
+    }
+
+    row {
+      button {
+        label "Join Room"
+        action "chat.join"
+      }
+
+      button {
+        label "Leave Room"
+        action "chat.leave"
+      }
+    }
+
+    row {
+      button {
+        label "Switch Room"
+        action "chat.switch_room"
+      }
+
+      button {
+        label "Mark Read"
+        action "chat.mark_read"
+      }
+    }
+
+    spacer size="1"
+    text "Room Members"
+    text bind="chat.room_members"
+    spacer size="1"
+    text "Peers"
+    text bind="chat.connected_peers"
+    text bind="chat.peers"
+    spacer size="1"
+    text "Rooms"
+    text bind="chat.rooms"
+    spacer size="1"
+    text "Inbox"
+    text bind="chat.inbox_messages"
+    spacer size="1"
+    text "Notifications"
+    text bind="chat.notifications"
+    spacer size="1"
+    text "Sessions"
+    text bind="chat.active_sessions"
+  }
+}

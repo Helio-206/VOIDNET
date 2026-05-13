@@ -1,0 +1,21 @@
+[package]
+name = "void-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+futures.workspace = true
+libp2p.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+void-chat = { path = "../../apps/void-chat" }
+void-dns = { path = "../dns" }
+void-identity = { path = "../identity" }
+void-protocol = { path = "../protocol" }
+x25519-dalek.workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "void-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+void-chat = { path = "../../apps/void-chat" }
+void-dns = { path = "../dns" }
+void-identity = { path = "../identity" }
+void-protocol = { path = "../protocol" }
+void-transport = { path = "../transport" }
+

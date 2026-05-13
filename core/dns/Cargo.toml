@@ -1,0 +1,19 @@
+[package]
+name = "void-dns"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+blake3.workspace = true
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+void-identity = { path = "../identity" }
+void-protocol = { path = "../protocol" }
+

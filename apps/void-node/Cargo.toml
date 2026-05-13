@@ -1,0 +1,19 @@
+[package]
+name = "void-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+libp2p.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+void-chat = { path = "../void-chat" }
+void-identity = { path = "../../core/identity" }
+void-transport = { path = "../../core/transport" }
+x25519-dalek.workspace = true

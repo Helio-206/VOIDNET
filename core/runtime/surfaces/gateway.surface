@@ -1,0 +1,65 @@
+page {
+  title "VOID Gateway"
+
+  column {
+    text "Runtime-native external bridge"
+    text bind="gateway.gateway_id"
+    text bind="gateway.owner_peer"
+    spacer size="1"
+
+    text "Trust"
+    text bind="gateway.trust_state"
+    spacer size="1"
+
+    text "Protocols"
+    text bind="gateway.supported_protocols"
+    spacer size="1"
+
+    text "Capabilities"
+    text bind="gateway.runtime_capabilities"
+    spacer size="1"
+
+    text "External Target"
+    text bind="gateway.external_target"
+    spacer size="1"
+
+    text "Bridge State"
+    text bind="gateway.bridge_state"
+    spacer size="1"
+
+    text "Request"
+    text bind="gateway.request"
+    spacer size="1"
+
+    text "Response"
+    text bind="gateway.response_status"
+    spacer size="1"
+
+    text "Response Headers"
+    text bind="gateway.response_headers"
+    spacer size="1"
+
+    text "Response Preview"
+    text bind="gateway.response_preview"
+    spacer size="1"
+
+    text "Cache"
+    text bind="gateway.response_cache"
+    spacer size="1"
+
+    text "Active Routes"
+    text bind="gateway.active_routes"
+    spacer size="1"
+
+    text "Bridge Sessions"
+    text bind="gateway.bridge_sessions"
+    spacer size="1"
+
+    text "Snapshots"
+    text bind="gateway.snapshot_state"
+    spacer size="1"
+
+    text "Permission History"
+    text bind="gateway.permission_history"
+  }
+}

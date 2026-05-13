@@ -1,0 +1,13 @@
+page {
+  title "VOIDNET"
+
+  column {
+    text "A new layer has emerged."
+
+    button {
+      label "Connect"
+      action "void://core/connect"
+    }
+  }
+}
+
