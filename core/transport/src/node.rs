@@ -2,14 +2,15 @@ use crate::{
     event::{DiscoverySource, EventBus, RuntimeMeshAnnouncement, TransportEvent},
     is_quic_address,
     lifecycle::{LifecycleEngine, NodeLifecycleState},
-    topology::{DnsTopologyInfo, MeshState, PeerRuntimeInfo, PeerTopology, TransportHealth},
+    topology::{ConnectionPath, DnsTopologyInfo, MeshState, PeerRuntimeInfo, PeerTopology, TransportHealth},
     NetworkConfig, TransportError, RUNTIME_MESH_TOPIC, VOID_AGENT_VERSION, VOID_DNS_TOPIC,
     VOID_IDENTIFY_PROTOCOL,
 };
 use futures::StreamExt;
 use libp2p::{
-    gossipsub, identify, identity, mdns, ping,
-    swarm::{NetworkBehaviour, SwarmEvent},
+    autonat, dcutr, gossipsub, identify, identity, mdns, ping, relay,
+    multiaddr::Protocol,
+    swarm::{behaviour::toggle::Toggle, NetworkBehaviour, SwarmEvent},
     Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
 use std::{
@@ -21,20 +22,20 @@ use std::{
 };
 use tokio::{select, signal, time};
 use void_chat::{
-    decrypt_payload, deserialize_payload, direct_peer_from_topic, direct_topic, drain_local_commands,
-    encrypt_payload, is_room_topic, load_chat_inbox, load_chat_notifications, load_chat_rooms, now_unix_ms,
-    mark_inbox_read, mark_notifications_read, merge_room_snapshot,
-    public_key_from_secret, random_ephemeral_secret, room_from_topic, room_topic, save_chat_inbox,
-    save_chat_notifications, save_chat_rooms, save_chat_sessions, serialize_payload, set_current_room,
-    set_local_room_joined, unread_count, upsert_room_member, ChatInboxEntry, ChatInboxState,
-    ChatLocalCommand, ChatMessageType, ChatNotificationsState, ChatRoomSnapshot,
-    ChatRoomsState, ChatSessionSnapshot, ChatSessionState, ChatSessionsState, ChatTextPayload,
-    ChatWireMessage, ReplayProtector, RoomMembershipAction, RoomMembershipEvent, RoomStateSnapshot,
-    SessionAck, SessionOffer, SignedEncryptedEnvelope, CHAT_REPLAY_WINDOW_SECS, push_notification,
-    record_room_event,
+    decrypt_payload, deserialize_payload, direct_peer_from_topic, direct_topic,
+    drain_local_commands, encrypt_payload, is_room_topic, load_chat_inbox, load_chat_notifications,
+    load_chat_rooms, mark_inbox_read, mark_notifications_read, merge_room_snapshot, now_unix_ms,
+    public_key_from_secret, push_notification, random_ephemeral_secret, record_room_event,
+    room_from_topic, room_topic, save_chat_inbox, save_chat_notifications, save_chat_rooms,
+    save_chat_sessions, serialize_payload, set_current_room, set_local_room_joined, unread_count,
+    upsert_room_member, ChatInboxEntry, ChatInboxState, ChatLocalCommand, ChatMessageType,
+    ChatNotificationsState, ChatRoomSnapshot, ChatRoomsState, ChatSessionSnapshot,
+    ChatSessionState, ChatSessionsState, ChatTextPayload, ChatWireMessage, ReplayProtector,
+    RoomMembershipAction, RoomMembershipEvent, RoomStateSnapshot, SessionAck, SessionOffer,
+    SignedEncryptedEnvelope, CHAT_REPLAY_WINDOW_SECS,
 };
 use void_dns::{
-    drain_dns_commands, DnsApplyOutcome, DnsCommand, DnsRecordSource, DnsPropagationMessage,
+    drain_dns_commands, DnsApplyOutcome, DnsCommand, DnsPropagationMessage, DnsRecordSource,
     PersistentVoidDns, VoidDomain,
 };
 use void_identity::PersistentNodeIdentity;
@@ -57,6 +58,7 @@ pub struct TransportNodeConfig {
     pub partition_after: Duration,
     pub exit_after: Option<Duration>,
     pub enable_mdns: bool,
+    pub enable_relay_server: bool,
 }
 
 impl TransportNodeConfig {
@@ -73,6 +75,7 @@ impl TransportNodeConfig {
             partition_after: Duration::from_secs(30),
             exit_after: None,
             enable_mdns: true,
+            enable_relay_server: false,
         }
     }
 }
@@ -84,10 +87,18 @@ struct VoidBehaviour {
     identify: identify::Behaviour,
     ping: ping::Behaviour,
     mdns: mdns::tokio::Behaviour,
+    relay_client: relay::client::Behaviour,
+    relay_server: Toggle<relay::Behaviour>,
+    dcutr: dcutr::Behaviour,
+    autonat: autonat::Behaviour,
 }
 
 impl VoidBehaviour {
-    fn new(keypair: &identity::Keypair) -> Result<Self, TransportError> {
+    fn new(
+        keypair: &identity::Keypair,
+        relay_client: relay::client::Behaviour,
+        enable_relay_server: bool,
+    ) -> Result<Self, TransportError> {
         let local_peer_id = keypair.public().to_peer_id();
         let mut gossipsub = gossipsub::Behaviour::new(
             gossipsub::MessageAuthenticity::Signed(keypair.clone()),
@@ -101,7 +112,9 @@ impl VoidBehaviour {
             .subscribe(&gossipsub::IdentTopic::new(VOID_DNS_TOPIC))
             .map_err(|error| TransportError::Backend(error.to_string()))?;
         gossipsub
-            .subscribe(&gossipsub::IdentTopic::new(direct_topic(&local_peer_id.to_string())))
+            .subscribe(&gossipsub::IdentTopic::new(direct_topic(
+                &local_peer_id.to_string(),
+            )))
             .map_err(|error| TransportError::Backend(error.to_string()))?;
 
         let identify_config =
@@ -118,6 +131,12 @@ impl VoidBehaviour {
             identify: identify::Behaviour::new(identify_config),
             ping: ping::Behaviour::default(),
             mdns,
+            relay_client,
+            relay_server: Toggle::from(enable_relay_server.then(|| {
+                relay::Behaviour::new(local_peer_id, relay::Config::default())
+            })),
+            dcutr: dcutr::Behaviour::new(local_peer_id),
+            autonat: autonat::Behaviour::new(local_peer_id, autonat::Config::default()),
         })
     }
 }
@@ -128,6 +147,10 @@ enum VoidBehaviourEvent {
     Identify(identify::Event),
     Ping(ping::Event),
     Mdns(mdns::Event),
+    RelayClient(relay::client::Event),
+    RelayServer(relay::Event),
+    Dcutr(dcutr::Event),
+    Autonat(autonat::Event),
 }
 
 impl From<gossipsub::Event> for VoidBehaviourEvent {
@@ -151,6 +174,30 @@ impl From<ping::Event> for VoidBehaviourEvent {
 impl From<mdns::Event> for VoidBehaviourEvent {
     fn from(event: mdns::Event) -> Self {
         Self::Mdns(event)
+    }
+}
+
+impl From<relay::client::Event> for VoidBehaviourEvent {
+    fn from(event: relay::client::Event) -> Self {
+        Self::RelayClient(event)
+    }
+}
+
+impl From<relay::Event> for VoidBehaviourEvent {
+    fn from(event: relay::Event) -> Self {
+        Self::RelayServer(event)
+    }
+}
+
+impl From<dcutr::Event> for VoidBehaviourEvent {
+    fn from(event: dcutr::Event) -> Self {
+        Self::Dcutr(event)
+    }
+}
+
+impl From<autonat::Event> for VoidBehaviourEvent {
+    fn from(event: autonat::Event) -> Self {
+        Self::Autonat(event)
     }
 }
 
@@ -200,7 +247,23 @@ pub async fn run_transport_node(config: TransportNodeConfig) -> Result<(), Trans
     let local_peer_id_string = local_peer_id.to_string();
     let keypair = identity.keypair().clone();
     let mut topology = PeerTopology::new(local_peer_id.to_string());
-    let capabilities = default_runtime_capabilities(config.enable_mdns);
+    topology.set_listen_addresses(
+        config
+            .network
+            .listen
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    );
+    topology.configure_bootstrap(
+        config
+            .network
+            .bootstrap
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    );
+    let capabilities = default_runtime_capabilities(config.enable_mdns, config.enable_relay_server);
     let mounted_runtime = build_local_runtime_snapshot(
         lifecycle.state(),
         started_at,
@@ -227,12 +290,19 @@ pub async fn run_transport_node(config: TransportNodeConfig) -> Result<(), Trans
             reason: "disabled by operator".to_string(),
         });
     }
+    if !config.network.bootstrap.is_empty() {
+        event_bus.emit(TransportEvent::BootstrapConfigured {
+            peers: config.network.bootstrap.len(),
+        });
+    }
 
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
         .with_quic()
-        .with_behaviour(|keypair| {
-            VoidBehaviour::new(keypair)
+        .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)
+        .map_err(|error| TransportError::Backend(error.to_string()))?
+        .with_behaviour(|keypair, relay_client| {
+            VoidBehaviour::new(keypair, relay_client, config.enable_relay_server)
                 .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })
         })
         .map_err(|error| TransportError::Backend(error.to_string()))?
@@ -295,8 +365,16 @@ pub async fn run_transport_node(config: TransportNodeConfig) -> Result<(), Trans
     }
 
     let mut known_dial_addrs: BTreeSet<String> = BTreeSet::new();
+    let bootstrap_addrs_by_peer = bootstrap_addresses_by_peer(&config.network.bootstrap);
+    let mut relay_reservations = BTreeSet::new();
     for address in &config.network.bootstrap {
         known_dial_addrs.insert(address.to_string());
+        let attempt = topology.observe_bootstrap_dial(address.to_string());
+        event_bus.emit(TransportEvent::BootstrapDialAttempt {
+            peer_id: peer_id_from_addr(address).map(|peer| peer.to_string()),
+            address: address.to_string(),
+            attempt,
+        });
         event_bus.emit(TransportEvent::PeerDiscovered {
             peer_id: peer_id_from_addr(address)
                 .map(|peer| peer.to_string())
@@ -305,6 +383,11 @@ pub async fn run_transport_node(config: TransportNodeConfig) -> Result<(), Trans
             source: DiscoverySource::Bootstrap,
         });
         if let Err(error) = swarm.dial(address.clone()) {
+            topology.observe_bootstrap_failure(
+                peer_id_from_addr(address).map(|peer| peer.to_string()).as_deref(),
+                Some(address.to_string()).as_deref(),
+                error.to_string(),
+            );
             event_bus.emit(TransportEvent::TransportFailed {
                 peer_id: peer_id_from_addr(address).map(|peer| peer.to_string()),
                 address: Some(address.to_string()),
@@ -323,9 +406,12 @@ pub async fn run_transport_node(config: TransportNodeConfig) -> Result<(), Trans
     runtime_tick.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     let mut partition_tick = time::interval(Duration::from_secs(5));
     partition_tick.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-    let mut exit_sleep = config.exit_after.map(|duration| Box::pin(time::sleep(duration)));
+    let mut exit_sleep = config
+        .exit_after
+        .map(|duration| Box::pin(time::sleep(duration)));
     let mut last_active_peer = Instant::now();
     let mut has_seen_mesh = false;
+    persist_topology(&event_bus, &topology, &config.topology_file)?;
 
     loop {
         select! {
@@ -398,11 +484,24 @@ pub async fn run_transport_node(config: TransportNodeConfig) -> Result<(), Trans
                 persist_topology(&event_bus, &topology, &config.topology_file)?;
             }
             _ = reconnect_tick.tick() => {
-                for address in known_dial_addrs.clone() {
+                for address in prioritized_reconnect_addrs(&known_dial_addrs, &topology) {
                     if let Ok(address) = address.parse::<Multiaddr>() {
+                        let attempt = topology.observe_bootstrap_dial(address.to_string());
+                        if config.network.bootstrap.iter().any(|bootstrap| bootstrap == &address) {
+                            event_bus.emit(TransportEvent::BootstrapDialAttempt {
+                                peer_id: peer_id_from_addr(&address).map(|peer| peer.to_string()),
+                                address: address.to_string(),
+                                attempt,
+                            });
+                        }
                         if let Err(error) = swarm.dial(address.clone()) {
                             let peer_id = peer_id_from_addr(&address).map(|peer| peer.to_string());
                             topology.observe_failure(peer_id.clone(), error.to_string());
+                            topology.observe_bootstrap_failure(
+                                peer_id.as_deref(),
+                                Some(address.to_string()).as_deref(),
+                                error.to_string(),
+                            );
                             event_bus.emit(TransportEvent::TransportFailed {
                                 peer_id,
                                 address: Some(address.to_string()),
@@ -470,6 +569,8 @@ pub async fn run_transport_node(config: TransportNodeConfig) -> Result<(), Trans
                     &mut lifecycle,
                     &mut topology,
                     &mut known_dial_addrs,
+                    &bootstrap_addrs_by_peer,
+                    &mut relay_reservations,
                     &config.topology_file,
                     local_peer_id,
                     &local_peer_id_string,
@@ -495,6 +596,8 @@ async fn handle_swarm_event(
     lifecycle: &mut LifecycleEngine,
     topology: &mut PeerTopology,
     known_dial_addrs: &mut BTreeSet<String>,
+    bootstrap_addrs_by_peer: &BTreeMap<String, Multiaddr>,
+    relay_reservations: &mut BTreeSet<String>,
     topology_file: &PathBuf,
     local_peer_id: PeerId,
     local_peer_id_string: &str,
@@ -507,6 +610,13 @@ async fn handle_swarm_event(
 ) -> Result<(), TransportError> {
     match swarm_event {
         SwarmEvent::NewListenAddr { address, .. } => {
+            let mut listen_addresses = topology
+                .network
+                .as_ref()
+                .map(|network| network.listen_addresses.clone())
+                .unwrap_or_default();
+            listen_addresses.push(address.to_string());
+            topology.set_listen_addresses(listen_addresses);
             event_bus.emit(TransportEvent::Listening {
                 address: address.to_string(),
             });
@@ -515,22 +625,92 @@ async fn handle_swarm_event(
             peer_id, endpoint, ..
         } => {
             let address = Some(endpoint.get_remote_address().to_string());
-            topology.observe_connected(peer_id.to_string(), address.clone(), "quic-v1");
+            let connection_path = topology.observe_connected(
+                peer_id.to_string(),
+                address.clone(),
+                if infer_relay_path(endpoint.get_remote_address()) {
+                    "relay-circuit"
+                } else {
+                    "quic-v1"
+                },
+            );
+            if topology.observe_bootstrap_connected(peer_id.to_string(), address.as_deref()) {
+                event_bus.emit(TransportEvent::BootstrapConnected {
+                    peer_id: peer_id.to_string(),
+                    address: address.clone(),
+                });
+            }
+            if connection_path == ConnectionPath::Relay {
+                let relay_peer_id = relay_peer_from_addr(endpoint.get_remote_address());
+                topology.observe_relay_session(
+                    peer_id.to_string(),
+                    relay_peer_id.clone(),
+                    "relay fallback active",
+                );
+                topology.observe_hole_punch_attempt(peer_id.to_string());
+                event_bus.emit(TransportEvent::RelayFallbackActivated {
+                    peer_id: peer_id.to_string(),
+                    relay_peer_id: relay_peer_id.clone(),
+                    reason: "relay fallback active".to_string(),
+                });
+                event_bus.emit(TransportEvent::RelaySessionEstablished {
+                    peer_id: peer_id.to_string(),
+                    relay_peer_id: relay_peer_id.clone(),
+                    address: address.clone(),
+                });
+                event_bus.emit(TransportEvent::HolePunchAttempt {
+                    peer_id: peer_id.to_string(),
+                    relay_peer_id,
+                });
+            }
             event_bus.emit(TransportEvent::TransportConnected {
                 peer_id: peer_id.to_string(),
-                address,
-                transport: "quic-v1".to_string(),
+                address: address.clone(),
+                transport: if connection_path == ConnectionPath::Relay {
+                    "relay-circuit".to_string()
+                } else {
+                    "quic-v1".to_string()
+                },
             });
+            if connection_path == ConnectionPath::Direct {
+                event_bus.emit(TransportEvent::DirectConnectionEstablished {
+                    peer_id: peer_id.to_string(),
+                    address: Some(endpoint.get_remote_address().to_string()),
+                });
+            }
             event_bus.emit(TransportEvent::SessionEncrypted {
                 peer_id: peer_id.to_string(),
-                transport: "quic-v1".to_string(),
-                cipher: "libp2p-quic".to_string(),
+                transport: if connection_path == ConnectionPath::Relay {
+                    "relay-circuit".to_string()
+                } else {
+                    "quic-v1".to_string()
+                },
+                cipher: if connection_path == ConnectionPath::Relay {
+                    "noise/yamux(relayed)".to_string()
+                } else {
+                    "libp2p-quic".to_string()
+                },
             });
-            topology.observe_transport_encryption(peer_id.to_string(), "libp2p-quic");
+            topology.observe_transport_encryption(
+                peer_id.to_string(),
+                if connection_path == ConnectionPath::Relay {
+                    "noise/yamux(relayed)"
+                } else {
+                    "libp2p-quic"
+                },
+            );
             event_bus.emit(TransportEvent::EncryptedSessionEstablished {
                 peer_id: peer_id.to_string(),
-                transport: "quic-v1".to_string(),
-                cipher: "libp2p-quic".to_string(),
+                transport: if connection_path == ConnectionPath::Relay {
+                    "relay-circuit".to_string()
+                } else {
+                    "quic-v1".to_string()
+                },
+                cipher: if connection_path == ConnectionPath::Relay {
+                    "noise/yamux(relayed)".to_string()
+                } else {
+                    "libp2p-quic".to_string()
+                },
             });
             event_bus.emit(TransportEvent::PeerStateChanged {
                 peer_id: peer_id.to_string(),
@@ -548,20 +728,28 @@ async fn handle_swarm_event(
             let reason = cause
                 .map(|cause| cause.to_string())
                 .unwrap_or_else(|| "connection closed".to_string());
+            clear_relay_reservation(&peer_id.to_string(), bootstrap_addrs_by_peer, relay_reservations);
+            topology.observe_relay_reservation_failed(
+                Some(peer_id.to_string()).as_deref(),
+                None,
+                reason.clone(),
+            );
             topology.observe_disconnected(peer_id.to_string());
+            topology.observe_bootstrap_failure(Some(peer_id.to_string()).as_deref(), None, reason.clone());
             event_bus.emit(TransportEvent::PeerDisconnected {
                 peer_id: peer_id.to_string(),
                 reason,
             });
             persist_topology(event_bus, topology, topology_file)?;
         }
-        SwarmEvent::OutgoingConnectionError {
-            peer_id,
-            error,
-            ..
-        } => {
+        SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
             let peer_id = peer_id.map(|peer| peer.to_string());
+            if let Some(peer_id) = peer_id.as_deref() {
+                clear_relay_reservation(peer_id, bootstrap_addrs_by_peer, relay_reservations);
+                topology.observe_relay_reservation_failed(Some(peer_id), None, error.to_string());
+            }
             topology.observe_failure(peer_id.clone(), error.to_string());
+            topology.observe_bootstrap_failure(peer_id.as_deref(), None, error.to_string());
             event_bus.emit(TransportEvent::TransportFailed {
                 peer_id,
                 address: None,
@@ -597,7 +785,19 @@ async fn handle_swarm_event(
                 return Ok(());
             }
 
-            let addresses: Vec<String> = info.listen_addrs.iter().map(ToString::to_string).collect();
+            let addresses: Vec<String> =
+                info.listen_addrs.iter().map(ToString::to_string).collect();
+            if let Some(reachability) = topology.observe_observed_address(info.observed_addr.to_string()) {
+                event_bus.emit(TransportEvent::ReachabilityChanged {
+                    reachability,
+                    observed_address: Some(info.observed_addr.to_string()),
+                    detail: "identify observed address updated".to_string(),
+                });
+            }
+            swarm
+                .behaviour_mut()
+                .autonat
+                .add_server(peer_id, info.listen_addrs.first().cloned());
             let runtime = PeerRuntimeInfo::new(
                 info.agent_version.clone(),
                 NodeLifecycleState::Syncing,
@@ -617,6 +817,17 @@ async fn handle_swarm_event(
                     addresses,
                     source: DiscoverySource::Identify,
                 });
+            }
+            if let Some(relay_address) = bootstrap_addrs_by_peer.get(&peer_id.to_string()) {
+                if supports_relay_server(&info.protocols) {
+                    ensure_relay_reservation(
+                        swarm,
+                        relay_address,
+                        relay_reservations,
+                        event_bus,
+                        topology,
+                    )?;
+                }
             }
             topology.observe_authenticated(peer_id.to_string());
             event_bus.emit(TransportEvent::PeerAuthenticated {
@@ -640,50 +851,65 @@ async fn handle_swarm_event(
             );
             persist_topology(event_bus, topology, topology_file)?;
         }
-        SwarmEvent::Behaviour(VoidBehaviourEvent::Ping(event)) => {
-            match event.result {
-                Ok(latency) => {
-                    topology.observe_latency(event.peer.to_string(), latency.as_millis());
-                    topology.observe_active(event.peer.to_string());
-                    *last_active_peer = Instant::now();
-                    if topology.mesh_state == MeshState::Partitioned || topology.mesh_state == MeshState::Degraded {
-                        emit_mesh_state_change(event_bus, topology, MeshState::Recovering, "active peer heartbeat restored");
-                        event_bus.emit(TransportEvent::PartitionRecovered {
-                            recovered_peers: topology.active_peer_count(),
-                            reason: "active peer heartbeat restored".to_string(),
-                        });
-                    } else {
-                        emit_mesh_state_change(event_bus, topology, MeshState::Stable, "active peer heartbeat observed");
-                    }
-                    *has_seen_mesh = true;
-                    event_bus.emit(TransportEvent::Ping {
-                        peer_id: event.peer.to_string(),
-                        latency_ms: latency.as_millis(),
-                    });
-                    event_bus.emit(TransportEvent::PeerStateChanged {
-                        peer_id: event.peer.to_string(),
-                        state: crate::topology::PeerConnectionState::Active,
-                    });
-                    emit_transition(
+        SwarmEvent::Behaviour(VoidBehaviourEvent::Ping(event)) => match event.result {
+            Ok(latency) => {
+                topology.observe_latency(event.peer.to_string(), latency.as_millis());
+                topology.observe_active(event.peer.to_string());
+                *last_active_peer = Instant::now();
+                if topology.mesh_state == MeshState::Partitioned
+                    || topology.mesh_state == MeshState::Degraded
+                {
+                    emit_mesh_state_change(
                         event_bus,
-                        lifecycle,
-                        NodeLifecycleState::Active,
-                        "ping observed active peer",
+                        topology,
+                        MeshState::Recovering,
+                        "active peer heartbeat restored",
                     );
-                    persist_topology(event_bus, topology, topology_file)?;
-                }
-                Err(error) => {
-                    topology.observe_failure(Some(event.peer.to_string()), error.to_string());
-                    emit_mesh_state_change(event_bus, topology, MeshState::Degraded, "peer ping failed");
-                    event_bus.emit(TransportEvent::TransportFailed {
-                        peer_id: Some(event.peer.to_string()),
-                        address: None,
-                        error: error.to_string(),
+                    event_bus.emit(TransportEvent::PartitionRecovered {
+                        recovered_peers: topology.active_peer_count(),
+                        reason: "active peer heartbeat restored".to_string(),
                     });
-                    persist_topology(event_bus, topology, topology_file)?;
+                } else {
+                    emit_mesh_state_change(
+                        event_bus,
+                        topology,
+                        MeshState::Stable,
+                        "active peer heartbeat observed",
+                    );
                 }
+                *has_seen_mesh = true;
+                event_bus.emit(TransportEvent::Ping {
+                    peer_id: event.peer.to_string(),
+                    latency_ms: latency.as_millis(),
+                });
+                event_bus.emit(TransportEvent::PeerStateChanged {
+                    peer_id: event.peer.to_string(),
+                    state: crate::topology::PeerConnectionState::Active,
+                });
+                emit_transition(
+                    event_bus,
+                    lifecycle,
+                    NodeLifecycleState::Active,
+                    "ping observed active peer",
+                );
+                persist_topology(event_bus, topology, topology_file)?;
             }
-        }
+            Err(error) => {
+                topology.observe_failure(Some(event.peer.to_string()), error.to_string());
+                emit_mesh_state_change(
+                    event_bus,
+                    topology,
+                    MeshState::Degraded,
+                    "peer ping failed",
+                );
+                event_bus.emit(TransportEvent::TransportFailed {
+                    peer_id: Some(event.peer.to_string()),
+                    address: None,
+                    error: error.to_string(),
+                });
+                persist_topology(event_bus, topology, topology_file)?;
+            }
+        },
         SwarmEvent::Behaviour(VoidBehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
             if !enable_mdns {
                 return Ok(());
@@ -738,7 +964,8 @@ async fn handle_swarm_event(
                     topology_file,
                     dns,
                     local_peer_id_string,
-                ).await?;
+                )
+                .await?;
                 return Ok(());
             }
             if topic != RUNTIME_MESH_TOPIC {
@@ -757,18 +984,22 @@ async fn handle_swarm_event(
                 return Ok(());
             }
 
-            let announcement = match serde_json::from_slice::<RuntimeMeshAnnouncement>(&message.data) {
-                Ok(announcement) => announcement,
-                Err(error) => {
-                    topology.observe_failure(Some(propagation_source.to_string()), error.to_string());
-                    event_bus.emit(TransportEvent::TransportFailed {
-                        peer_id: Some(propagation_source.to_string()),
-                        address: None,
-                        error: format!("invalid runtime mesh announcement: {error}"),
-                    });
-                    return Ok(());
-                }
-            };
+            let announcement =
+                match serde_json::from_slice::<RuntimeMeshAnnouncement>(&message.data) {
+                    Ok(announcement) => announcement,
+                    Err(error) => {
+                        topology.observe_failure(
+                            Some(propagation_source.to_string()),
+                            error.to_string(),
+                        );
+                        event_bus.emit(TransportEvent::TransportFailed {
+                            peer_id: Some(propagation_source.to_string()),
+                            address: None,
+                            error: format!("invalid runtime mesh announcement: {error}"),
+                        });
+                        return Ok(());
+                    }
+                };
 
             if announcement.peer_id == local_peer_id_string {
                 return Ok(());
@@ -791,7 +1022,10 @@ async fn handle_swarm_event(
         SwarmEvent::Behaviour(VoidBehaviourEvent::Gossipsub(
             gossipsub::Event::GossipsubNotSupported { peer_id },
         )) => {
-            topology.observe_failure(Some(peer_id.to_string()), "peer does not support gossipsub runtime topic");
+            topology.observe_failure(
+                Some(peer_id.to_string()),
+                "peer does not support gossipsub runtime topic",
+            );
             event_bus.emit(TransportEvent::CapabilityRejected {
                 peer_id: peer_id.to_string(),
                 capability: "mesh/runtime-events".to_string(),
@@ -805,12 +1039,118 @@ async fn handle_swarm_event(
             ..
         })) => {
             topology.observe_failure(Some(peer_id.to_string()), error.to_string());
+            topology.observe_relay_reservation_failed(
+                Some(peer_id.to_string()).as_deref(),
+                None,
+                error.to_string(),
+            );
+            topology.observe_bootstrap_failure(Some(peer_id.to_string()).as_deref(), None, error.to_string());
             event_bus.emit(TransportEvent::TransportFailed {
                 peer_id: Some(peer_id.to_string()),
                 address: None,
                 error: error.to_string(),
             });
             persist_topology(event_bus, topology, topology_file)?;
+        }
+        SwarmEvent::Behaviour(VoidBehaviourEvent::RelayClient(event)) => match event {
+            relay::client::Event::ReservationReqAccepted {
+                relay_peer_id,
+                renewal,
+                ..
+            } => {
+                topology.observe_relay_reservation_accepted(
+                    Some(relay_peer_id.to_string()).as_deref(),
+                    None,
+                );
+                event_bus.emit(TransportEvent::RelayReservationAccepted {
+                    relay_peer_id: relay_peer_id.to_string(),
+                    renewal,
+                });
+                persist_topology(event_bus, topology, topology_file)?;
+            }
+            relay::client::Event::OutboundCircuitEstablished { relay_peer_id, .. } => {
+                event_bus.emit(TransportEvent::RelayCircuitEstablished {
+                    peer_id: relay_peer_id.to_string(),
+                    relay_peer_id: Some(relay_peer_id.to_string()),
+                    address: None,
+                });
+                event_bus.emit(TransportEvent::RelayFallbackActivated {
+                    peer_id: relay_peer_id.to_string(),
+                    relay_peer_id: Some(relay_peer_id.to_string()),
+                    reason: "outbound relay circuit established".to_string(),
+                });
+            }
+            relay::client::Event::InboundCircuitEstablished { src_peer_id, .. } => {
+                event_bus.emit(TransportEvent::RelayCircuitEstablished {
+                    peer_id: src_peer_id.to_string(),
+                    relay_peer_id: None,
+                    address: None,
+                });
+                event_bus.emit(TransportEvent::RelaySessionEstablished {
+                    peer_id: src_peer_id.to_string(),
+                    relay_peer_id: None,
+                    address: None,
+                });
+            }
+        },
+        SwarmEvent::Behaviour(VoidBehaviourEvent::Dcutr(event)) => {
+            match event.result {
+                Ok(_) => {
+                    topology.observe_hole_punch_succeeded(event.remote_peer_id.to_string());
+                    event_bus.emit(TransportEvent::HolePunchSucceeded {
+                        peer_id: event.remote_peer_id.to_string(),
+                    });
+                    event_bus.emit(TransportEvent::DirectUpgradeSucceeded {
+                        peer_id: event.remote_peer_id.to_string(),
+                    });
+                }
+                Err(error) => {
+                    topology.observe_hole_punch_failed(
+                        event.remote_peer_id.to_string(),
+                        error.to_string(),
+                    );
+                    event_bus.emit(TransportEvent::HolePunchFailed {
+                        peer_id: event.remote_peer_id.to_string(),
+                        error: error.to_string(),
+                    });
+                    event_bus.emit(TransportEvent::DirectUpgradeFailed {
+                        peer_id: event.remote_peer_id.to_string(),
+                        error: error.to_string(),
+                    });
+                }
+            }
+            persist_topology(event_bus, topology, topology_file)?;
+        }
+        SwarmEvent::Behaviour(VoidBehaviourEvent::Autonat(event)) => match event {
+            autonat::Event::StatusChanged { old: _, new } => {
+                let public_address = swarm
+                    .behaviour()
+                    .autonat
+                    .public_address()
+                    .map(ToString::to_string);
+                let status = nat_status_label(&new).to_string();
+                if let Some(reachability) = topology.observe_nat_status(
+                    status.clone(),
+                    public_address.clone(),
+                    swarm.behaviour().autonat.confidence(),
+                ) {
+                    event_bus.emit(TransportEvent::ReachabilityChanged {
+                        reachability,
+                        observed_address: public_address.clone(),
+                        detail: "autonat status updated".to_string(),
+                    });
+                }
+                event_bus.emit(TransportEvent::NatStatusChanged {
+                    status,
+                    public_address,
+                    confidence: swarm.behaviour().autonat.confidence(),
+                });
+                persist_topology(event_bus, topology, topology_file)?;
+            }
+            autonat::Event::InboundProbe(_) | autonat::Event::OutboundProbe(_) => {}
+        },
+        SwarmEvent::Behaviour(VoidBehaviourEvent::RelayServer(event)) => {
+            let _ = event;
         }
         _ => {}
     }
@@ -864,13 +1204,16 @@ fn build_local_runtime_snapshot(
     )
 }
 
-fn default_runtime_capabilities(enable_mdns: bool) -> Vec<String> {
+fn default_runtime_capabilities(enable_mdns: bool, enable_relay_server: bool) -> Vec<String> {
     let mut capabilities = vec![
         "chat/direct-e2ee".to_string(),
         "chat/room-membership".to_string(),
         "transport/quic-v1".to_string(),
         "transport/identify".to_string(),
         "transport/ping".to_string(),
+        "transport/relay-client".to_string(),
+        "transport/dcutr".to_string(),
+        "transport/autonat".to_string(),
         "dns/cache".to_string(),
         "dns/propagation".to_string(),
         "mesh/runtime-events".to_string(),
@@ -883,7 +1226,146 @@ fn default_runtime_capabilities(enable_mdns: bool) -> Vec<String> {
     if enable_mdns {
         capabilities.push("discovery/mdns".to_string());
     }
+    if enable_relay_server {
+        capabilities.push("transport/relay-server".to_string());
+    }
     capabilities
+}
+
+fn bootstrap_addresses_by_peer(addresses: &[Multiaddr]) -> BTreeMap<String, Multiaddr> {
+    let mut bootstrap = BTreeMap::new();
+    for address in addresses {
+        if let Some(peer_id) = peer_id_from_addr(address) {
+            bootstrap.insert(peer_id.to_string(), address.clone());
+        }
+    }
+    bootstrap
+}
+
+fn prioritized_reconnect_addrs(
+    known_dial_addrs: &BTreeSet<String>,
+    topology: &PeerTopology,
+) -> Vec<String> {
+    let mut direct = Vec::new();
+    let mut relay = Vec::new();
+    for address in known_dial_addrs {
+        let Ok(address_parsed) = address.parse::<Multiaddr>() else {
+            continue;
+        };
+        if infer_relay_path(&address_parsed) {
+            let should_retry = peer_id_from_addr(&address_parsed)
+                .map(|peer_id| {
+                    topology
+                        .peers
+                        .get(&peer_id.to_string())
+                        .map(|record| record.state != crate::topology::PeerConnectionState::Active)
+                        .unwrap_or(true)
+                })
+                .unwrap_or(true);
+            if should_retry {
+                relay.push(address.clone());
+            }
+        } else {
+            direct.push(address.clone());
+        }
+    }
+    direct.extend(relay);
+    direct
+}
+
+fn supports_relay_server(protocols: &[impl ToString]) -> bool {
+    protocols
+        .iter()
+        .any(|protocol| protocol.to_string().contains("circuit/relay"))
+}
+
+fn ensure_relay_reservation(
+    swarm: &mut Swarm<VoidBehaviour>,
+    relay_address: &Multiaddr,
+    relay_reservations: &mut BTreeSet<String>,
+    event_bus: &EventBus,
+    topology: &mut PeerTopology,
+) -> Result<(), TransportError> {
+    let mut reservation_address = relay_address.clone();
+    reservation_address.push(Protocol::P2pCircuit);
+    if !relay_reservations.insert(reservation_address.to_string()) {
+        return Ok(());
+    }
+    topology.observe_relay_reservation_attempt(
+        peer_id_from_addr(relay_address).map(|peer_id| peer_id.to_string()).as_deref(),
+        Some(relay_address.to_string()).as_deref(),
+    );
+    event_bus.emit(TransportEvent::RelayReservationAttempted {
+        relay_peer_id: peer_id_from_addr(relay_address)
+            .map(|peer_id| peer_id.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        address: reservation_address.to_string(),
+    });
+    if let Err(error) = swarm.listen_on(reservation_address.clone()) {
+        relay_reservations.remove(&reservation_address.to_string());
+        topology.observe_relay_reservation_failed(
+            peer_id_from_addr(relay_address).map(|peer_id| peer_id.to_string()).as_deref(),
+            Some(relay_address.to_string()).as_deref(),
+            error.to_string(),
+        );
+        topology.observe_failure(
+            peer_id_from_addr(relay_address).map(|peer_id| peer_id.to_string()),
+            error.to_string(),
+        );
+        event_bus.emit(TransportEvent::RelayReservationFailed {
+            relay_peer_id: peer_id_from_addr(relay_address).map(|peer_id| peer_id.to_string()),
+            address: Some(reservation_address.to_string()),
+            error: error.to_string(),
+        });
+        event_bus.emit(TransportEvent::TransportFailed {
+            peer_id: peer_id_from_addr(relay_address).map(|peer_id| peer_id.to_string()),
+            address: Some(reservation_address.to_string()),
+            error: error.to_string(),
+        });
+        return Err(TransportError::Backend(error.to_string()));
+    }
+    Ok(())
+}
+
+fn clear_relay_reservation(
+    relay_peer_id: &str,
+    bootstrap_addrs_by_peer: &BTreeMap<String, Multiaddr>,
+    relay_reservations: &mut BTreeSet<String>,
+) {
+    if let Some(relay_address) = bootstrap_addrs_by_peer.get(relay_peer_id) {
+        let mut reservation_address = relay_address.clone();
+        reservation_address.push(Protocol::P2pCircuit);
+        relay_reservations.remove(&reservation_address.to_string());
+    }
+}
+
+fn infer_relay_path(address: &Multiaddr) -> bool {
+    address.iter().any(|protocol| matches!(protocol, Protocol::P2pCircuit))
+}
+
+fn nat_status_label(status: &autonat::NatStatus) -> &'static str {
+    match status {
+        autonat::NatStatus::Public(_) => "Public",
+        autonat::NatStatus::Private => "Private",
+        autonat::NatStatus::Unknown => "Unknown",
+    }
+}
+
+fn relay_peer_from_addr(address: &Multiaddr) -> Option<String> {
+    let mut before_circuit = Vec::new();
+    for protocol in address.iter() {
+        if matches!(protocol, Protocol::P2pCircuit) {
+            break;
+        }
+        before_circuit.push(protocol);
+    }
+    before_circuit
+        .iter()
+        .rev()
+        .find_map(|protocol| match protocol {
+            Protocol::P2p(peer_id) => Some(peer_id.to_string()),
+            _ => None,
+        })
 }
 
 fn local_transport_health(
@@ -985,9 +1467,9 @@ fn spawn_event_logger(event_bus: EventBus, event_log_file: PathBuf) {
 }
 
 fn peer_id_from_addr(address: &Multiaddr) -> Option<PeerId> {
-    address.iter().find_map(|protocol| match protocol {
-        libp2p::multiaddr::Protocol::P2p(peer_id) => Some(peer_id),
-        _ => None,
+    address.iter().fold(None, |peer_id, protocol| match protocol {
+        libp2p::multiaddr::Protocol::P2p(next_peer_id) => Some(next_peer_id),
+        _ => peer_id,
     })
 }
 
@@ -1038,8 +1520,8 @@ async fn handle_dns_command_tick(
     runtime_capabilities: &[String],
     dns: &mut DnsRuntimeState,
 ) -> Result<(), TransportError> {
-    let commands = drain_dns_commands(data_dir)
-        .map_err(|error| TransportError::Backend(error.to_string()))?;
+    let commands =
+        drain_dns_commands(data_dir).map_err(|error| TransportError::Backend(error.to_string()))?;
     if commands.is_empty() {
         return Ok(());
     }
@@ -1053,7 +1535,8 @@ async fn handle_dns_command_tick(
                 capabilities,
                 ttl_secs,
             } => {
-                let runtime_surface = runtime_surface.unwrap_or_else(|| derive_runtime_surface(&domain));
+                let runtime_surface =
+                    runtime_surface.unwrap_or_else(|| derive_runtime_surface(&domain));
                 let capabilities = if capabilities.is_empty() {
                     default_dns_service_capabilities(&runtime_surface, runtime_capabilities)
                 } else {
@@ -1075,9 +1558,13 @@ async fn handle_dns_command_tick(
                     Ok((record, outcome)) => {
                         dns.published_domains.insert(record.domain.to_string());
                         emit_dns_apply_outcome(event_bus, &outcome);
-                        if matches!(outcome, DnsApplyOutcome::Published(_) | DnsApplyOutcome::Updated(_)) {
-                            let propagation = PersistentVoidDns::propagation_message(record.clone())
-                                .map_err(|error| TransportError::Backend(error.to_string()))?;
+                        if matches!(
+                            outcome,
+                            DnsApplyOutcome::Published(_) | DnsApplyOutcome::Updated(_)
+                        ) {
+                            let propagation =
+                                PersistentVoidDns::propagation_message(record.clone())
+                                    .map_err(|error| TransportError::Backend(error.to_string()))?;
                             dns.remember_event(&propagation.event_id);
                             publish_dns_propagation(swarm, &propagation)?;
                             emit_dns_resolution_probe(event_bus, dns, &record.domain).await?;
@@ -1140,13 +1627,17 @@ async fn handle_dns_wire_message(
         Err(error) => {
             event_bus.emit(TransportEvent::DnsRecordRejected {
                 domain: "unknown".to_string(),
-                reason: format!("invalid dns propagation payload from {propagation_source}: {error}"),
+                reason: format!(
+                    "invalid dns propagation payload from {propagation_source}: {error}"
+                ),
             });
             return Ok(());
         }
     };
 
-    if message.record.owner_peer_id == local_peer_id_string || !dns.remember_event(&message.event_id) {
+    if message.record.owner_peer_id == local_peer_id_string
+        || !dns.remember_event(&message.event_id)
+    {
         return Ok(());
     }
 
@@ -1158,7 +1649,10 @@ async fn handle_dns_wire_message(
     {
         Ok(outcome) => {
             emit_dns_apply_outcome(event_bus, &outcome);
-            if matches!(outcome, DnsApplyOutcome::Published(_) | DnsApplyOutcome::Updated(_)) {
+            if matches!(
+                outcome,
+                DnsApplyOutcome::Published(_) | DnsApplyOutcome::Updated(_)
+            ) {
                 emit_dns_resolution_probe(event_bus, dns, &domain).await?;
             }
         }
@@ -1282,7 +1776,10 @@ fn default_dns_service_capabilities(
         "routing/void-uri".to_string(),
         format!("service/{runtime_surface}"),
     ];
-    if runtime_capabilities.iter().any(|capability| capability == "chat/direct-e2ee") {
+    if runtime_capabilities
+        .iter()
+        .any(|capability| capability == "chat/direct-e2ee")
+    {
         capabilities.push("chat/direct-e2ee".to_string());
     }
     capabilities.sort();
@@ -1327,7 +1824,10 @@ struct ChatRuntimeState {
 enum ChatSwarmAction {
     Subscribe(String),
     Unsubscribe(String),
-    Publish { topic: String, message: ChatWireMessage },
+    Publish {
+        topic: String,
+        message: ChatWireMessage,
+    },
 }
 
 impl ChatRuntimeState {
@@ -1357,7 +1857,10 @@ impl ChatRuntimeState {
     }
 
     fn subscription_topics(&self) -> Vec<String> {
-        self.joined_rooms.iter().map(|room| room_topic(room)).collect()
+        self.joined_rooms
+            .iter()
+            .map(|room| room_topic(room))
+            .collect()
     }
 
     fn persist(&self) -> Result<(), void_chat::ChatError> {
@@ -1379,15 +1882,19 @@ impl ChatRuntimeState {
             .values()
             .map(|session| session.snapshot.clone())
             .collect::<Vec<_>>();
-        snapshots.extend(self.pending_sessions.values().map(|pending| ChatSessionSnapshot {
-            peer_id: pending.peer_id.clone(),
-            session_id: pending.session_id.clone(),
-            established_at_unix_ms: pending.started_at_unix_ms,
-            encryption_state: ChatSessionState::Negotiating,
-            last_activity_unix_ms: pending.started_at_unix_ms,
-            transport_state: "GOSSIPSUB-DIRECT".to_string(),
-            last_error: None,
-        }));
+        snapshots.extend(
+            self.pending_sessions
+                .values()
+                .map(|pending| ChatSessionSnapshot {
+                    peer_id: pending.peer_id.clone(),
+                    session_id: pending.session_id.clone(),
+                    established_at_unix_ms: pending.started_at_unix_ms,
+                    encryption_state: ChatSessionState::Negotiating,
+                    last_activity_unix_ms: pending.started_at_unix_ms,
+                    transport_state: "GOSSIPSUB-DIRECT".to_string(),
+                    last_error: None,
+                }),
+        );
         snapshots.sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
         snapshots
     }
@@ -1408,7 +1915,13 @@ fn handle_chat_command_tick(
     let mut changed = false;
 
     for command in commands {
-        actions.extend(process_chat_command(identity, event_bus, topology, chat, command.command)?);
+        actions.extend(process_chat_command(
+            identity,
+            event_bus,
+            topology,
+            chat,
+            command.command,
+        )?);
         changed = true;
     }
     let room_sync_actions = build_room_sync_actions(identity, event_bus, chat)?;
@@ -1488,7 +2001,13 @@ fn process_chat_command(
                 set_local_room_joined(&mut chat.rooms, &room, true);
                 upsert_room_member(&mut chat.rooms, &room, &chat.local_peer_id, true);
             }
-            record_room_event(&mut chat.rooms, &room, "room.join", &chat.local_peer_id, None);
+            record_room_event(
+                &mut chat.rooms,
+                &room,
+                "room.join",
+                &chat.local_peer_id,
+                None,
+            );
             event_bus.emit(TransportEvent::RoomMembershipChanged {
                 room: room.clone(),
                 peer_id: chat.local_peer_id.clone(),
@@ -1511,8 +2030,9 @@ fn process_chat_command(
                 peer_id: Some(chat.local_peer_id.clone()),
                 unread_notifications,
             });
-            let membership = RoomMembershipEvent::new(identity, room.clone(), RoomMembershipAction::Join)
-                .map_err(|error| TransportError::Backend(error.to_string()))?;
+            let membership =
+                RoomMembershipEvent::new(identity, room.clone(), RoomMembershipAction::Join)
+                    .map_err(|error| TransportError::Backend(error.to_string()))?;
             let mut actions = vec![
                 ChatSwarmAction::Subscribe(room_topic(&room)),
                 ChatSwarmAction::Publish {
@@ -1520,7 +2040,8 @@ fn process_chat_command(
                     message: ChatWireMessage::RoomMembership(membership),
                 },
             ];
-            if let Some(action) = build_room_state_action(identity, event_bus, chat, &room, "join")? {
+            if let Some(action) = build_room_state_action(identity, event_bus, chat, &room, "join")?
+            {
                 actions.push(action);
             }
             Ok(actions)
@@ -1529,7 +2050,13 @@ fn process_chat_command(
             chat.joined_rooms.remove(&room);
             set_local_room_joined(&mut chat.rooms, &room, false);
             upsert_room_member(&mut chat.rooms, &room, &chat.local_peer_id, false);
-            record_room_event(&mut chat.rooms, &room, "room.leave", &chat.local_peer_id, None);
+            record_room_event(
+                &mut chat.rooms,
+                &room,
+                "room.leave",
+                &chat.local_peer_id,
+                None,
+            );
             event_bus.emit(TransportEvent::RoomMembershipChanged {
                 room: room.clone(),
                 peer_id: chat.local_peer_id.clone(),
@@ -1552,8 +2079,9 @@ fn process_chat_command(
                 peer_id: Some(chat.local_peer_id.clone()),
                 unread_notifications,
             });
-            let membership = RoomMembershipEvent::new(identity, room.clone(), RoomMembershipAction::Leave)
-                .map_err(|error| TransportError::Backend(error.to_string()))?;
+            let membership =
+                RoomMembershipEvent::new(identity, room.clone(), RoomMembershipAction::Leave)
+                    .map_err(|error| TransportError::Backend(error.to_string()))?;
             Ok(vec![
                 ChatSwarmAction::Publish {
                     topic: room_topic(&room),
@@ -1565,7 +2093,8 @@ fn process_chat_command(
         ChatLocalCommand::SwitchRoom { room } => {
             set_current_room(&mut chat.rooms, Some(room.clone()));
             let cleared_messages = mark_inbox_read(&mut chat.inbox, Some(&room));
-            let cleared_notifications = mark_notifications_read(&mut chat.notifications, Some(&room));
+            let cleared_notifications =
+                mark_notifications_read(&mut chat.notifications, Some(&room));
             event_bus.emit(TransportEvent::InboxSynchronized {
                 messages: chat.inbox.messages.len(),
                 unread_messages: unread_count(&chat.inbox, None),
@@ -1576,10 +2105,19 @@ fn process_chat_command(
                     kind: "room.switch".to_string(),
                     room: Some(room.clone()),
                     peer_id: Some(chat.local_peer_id.clone()),
-                    unread_notifications: chat.notifications.notifications.iter().filter(|entry| entry.unread).count(),
+                    unread_notifications: chat
+                        .notifications
+                        .notifications
+                        .iter()
+                        .filter(|entry| entry.unread)
+                        .count(),
                 });
             }
-            Ok(if cleared_messages > 0 { build_room_sync_actions(identity, event_bus, chat)? } else { Vec::new() })
+            Ok(if cleared_messages > 0 {
+                build_room_sync_actions(identity, event_bus, chat)?
+            } else {
+                Vec::new()
+            })
         }
         ChatLocalCommand::MarkRead { room } => {
             let room_ref = room.as_deref();
@@ -1607,7 +2145,8 @@ fn build_direct_message_action(
     };
     let encrypted_payload = encrypt_payload(
         &session.key,
-        &serde_json::to_vec(&payload).map_err(|error| TransportError::Backend(error.to_string()))?,
+        &serde_json::to_vec(&payload)
+            .map_err(|error| TransportError::Backend(error.to_string()))?,
     )
     .map_err(|error| TransportError::Backend(error.to_string()))?;
     let envelope = SignedEncryptedEnvelope::new(
@@ -1664,7 +2203,10 @@ fn handle_chat_wire_message(
                 match process_session_offer(identity, event_bus, topology, chat, offer) {
                     Ok(actions) => actions,
                     Err(error) => {
-                        topology.observe_session_failure(propagation_source.to_string(), error.to_string());
+                        topology.observe_session_failure(
+                            propagation_source.to_string(),
+                            error.to_string(),
+                        );
                         Vec::new()
                     }
                 }
@@ -1689,14 +2231,25 @@ fn handle_chat_wire_message(
             if !is_room_topic(topic) {
                 Vec::new()
             } else {
-                process_room_membership(identity, event_bus, chat, event, room_from_topic(topic).as_deref())?
+                process_room_membership(
+                    identity,
+                    event_bus,
+                    chat,
+                    event,
+                    room_from_topic(topic).as_deref(),
+                )?
             }
         }
         ChatWireMessage::RoomStateSnapshot(snapshot) => {
             if !is_room_topic(topic) {
                 Vec::new()
             } else {
-                process_room_state_snapshot(event_bus, chat, snapshot, room_from_topic(topic).as_deref())?;
+                process_room_state_snapshot(
+                    event_bus,
+                    chat,
+                    snapshot,
+                    room_from_topic(topic).as_deref(),
+                )?;
                 Vec::new()
             }
         }
@@ -1740,7 +2293,8 @@ fn process_session_offer(
     let public_key = public_key_from_secret(&secret);
     let session_key = void_chat::derive_session_key(
         secret,
-        offer.peer_public_key()
+        offer
+            .peer_public_key()
             .map_err(|error| TransportError::Backend(error.to_string()))?,
         &offer.session_id,
     );
@@ -1785,7 +2339,12 @@ fn process_session_offer(
     if let Some(messages) = chat.pending_messages.remove(&offer.sender_peer_id) {
         for message in messages {
             if let Some(session) = chat.active_sessions.get_mut(&offer.sender_peer_id) {
-                actions.push(build_direct_message_action(identity, &offer.sender_peer_id, &message, session)?);
+                actions.push(build_direct_message_action(
+                    identity,
+                    &offer.sender_peer_id,
+                    &message,
+                    session,
+                )?);
             }
         }
     }
@@ -1865,7 +2424,12 @@ fn process_session_ack(
     if let Some(messages) = chat.pending_messages.remove(&ack.sender_peer_id) {
         for message in messages {
             if let Some(session) = chat.active_sessions.get_mut(&ack.sender_peer_id) {
-                actions.push(build_direct_message_action(identity, &ack.sender_peer_id, &message, session)?);
+                actions.push(build_direct_message_action(
+                    identity,
+                    &ack.sender_peer_id,
+                    &message,
+                    session,
+                )?);
             }
         }
     }
@@ -1899,11 +2463,17 @@ fn process_direct_message(
     }
 
     let Some(session) = chat.active_sessions.get_mut(&envelope.sender_peer_id) else {
-        topology.observe_session_failure(envelope.sender_peer_id.clone(), "missing active session for inbound payload");
+        topology.observe_session_failure(
+            envelope.sender_peer_id.clone(),
+            "missing active session for inbound payload",
+        );
         return Ok(());
     };
     if session.snapshot.session_id != envelope.session_id {
-        topology.observe_session_failure(envelope.sender_peer_id.clone(), "session id mismatch for inbound payload");
+        topology.observe_session_failure(
+            envelope.sender_peer_id.clone(),
+            "session id mismatch for inbound payload",
+        );
         return Ok(());
     }
 
@@ -1995,7 +2565,11 @@ fn process_direct_message(
     event_bus.emit(TransportEvent::NotificationRaised {
         kind: "message.received".to_string(),
         room: payload.room,
-        peer_id: chat.inbox.messages.last().map(|entry| entry.from_peer_id.clone()),
+        peer_id: chat
+            .inbox
+            .messages
+            .last()
+            .map(|entry| entry.from_peer_id.clone()),
         unread_notifications,
     });
     Ok(())
@@ -2063,7 +2637,11 @@ fn process_room_membership(
     if event.peer_id != chat.local_peer_id && chat.joined_rooms.contains(room_name) {
         let unread_notifications = push_notification(
             &mut chat.notifications,
-            if joined { "room.peer-join" } else { "room.peer-leave" },
+            if joined {
+                "room.peer-join"
+            } else {
+                "room.peer-leave"
+            },
             Some(room_name),
             Some(&event.peer_id),
             if joined {
@@ -2073,14 +2651,21 @@ fn process_room_membership(
             },
         );
         event_bus.emit(TransportEvent::NotificationRaised {
-            kind: if joined { "room.peer-join" } else { "room.peer-leave" }.to_string(),
+            kind: if joined {
+                "room.peer-join"
+            } else {
+                "room.peer-leave"
+            }
+            .to_string(),
             room: Some(room_name.to_string()),
             peer_id: Some(event.peer_id.clone()),
             unread_notifications,
         });
     }
     if joined && chat.joined_rooms.contains(room_name) && event.peer_id != chat.local_peer_id {
-        if let Some(action) = build_room_state_action(identity, event_bus, chat, room_name, "peer-join")? {
+        if let Some(action) =
+            build_room_state_action(identity, event_bus, chat, room_name, "peer-join")?
+        {
             return Ok(vec![action]);
         }
     }
@@ -2113,14 +2698,20 @@ fn process_room_state_snapshot(
         return Ok(());
     }
 
-    let room_name = room_from_topic.unwrap_or(snapshot.room.as_str()).to_string();
+    let room_name = room_from_topic
+        .unwrap_or(snapshot.room.as_str())
+        .to_string();
     let remote_snapshot = ChatRoomSnapshot {
         room: room_name.clone(),
         joined: false,
         members: snapshot.members.clone(),
         room_id: room_name.clone(),
         room_name: room_name.clone(),
-        active_members: snapshot.members.iter().filter(|member| member.presence == "ONLINE").count(),
+        active_members: snapshot
+            .members
+            .iter()
+            .filter(|member| member.presence == "ONLINE")
+            .count(),
         event_history: snapshot.recent_events.clone(),
         last_changed_unix_ms: snapshot.timestamp_unix_ms,
     };
@@ -2260,7 +2851,9 @@ fn build_room_sync_actions(
     let mut actions = Vec::new();
     for room in chat.joined_rooms.iter().cloned().collect::<Vec<_>>() {
         upsert_room_member(&mut chat.rooms, &room, &chat.local_peer_id, true);
-        if let Some(action) = build_room_state_action(identity, event_bus, chat, &room, "heartbeat")? {
+        if let Some(action) =
+            build_room_state_action(identity, event_bus, chat, &room, "heartbeat")?
+        {
             actions.push(action);
         }
     }
@@ -2282,7 +2875,11 @@ fn build_room_state_action(
     event_bus.emit(TransportEvent::RoomStateSynchronized {
         room: room.to_string(),
         peer_id: chat.local_peer_id.clone(),
-        members: snapshot.members.iter().filter(|member| member.presence == "ONLINE").count(),
+        members: snapshot
+            .members
+            .iter()
+            .filter(|member| member.presence == "ONLINE")
+            .count(),
         events: snapshot.recent_events.len(),
         reason: reason.to_string(),
     });
@@ -2301,7 +2898,9 @@ fn room_recipients(chat: &ChatRuntimeState, room: &str) -> Vec<String> {
             snapshot
                 .members
                 .iter()
-                .filter(|member| member.peer_id != chat.local_peer_id && member.presence == "ONLINE")
+                .filter(|member| {
+                    member.peer_id != chat.local_peer_id && member.presence == "ONLINE"
+                })
                 .map(|member| member.peer_id.clone())
                 .collect::<Vec<_>>()
         })

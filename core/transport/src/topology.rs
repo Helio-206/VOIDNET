@@ -1,9 +1,10 @@
 use crate::lifecycle::NodeLifecycleState;
+use libp2p::{multiaddr::Protocol, Multiaddr};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fmt,
-    fs, io,
+    fmt, fs, io,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -75,6 +76,142 @@ impl fmt::Display for MeshState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ConnectionPath {
+    #[default]
+    Unknown,
+    Direct,
+    Relay,
+}
+
+impl fmt::Display for ConnectionPath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            ConnectionPath::Unknown => "UNKNOWN",
+            ConnectionPath::Direct => "DIRECT",
+            ConnectionPath::Relay => "RELAY",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum NetworkReachability {
+    #[default]
+    Unknown,
+    Private,
+    Public,
+}
+
+impl fmt::Display for NetworkReachability {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            NetworkReachability::Unknown => "UNKNOWN",
+            NetworkReachability::Private => "PRIVATE",
+            NetworkReachability::Public => "PUBLIC",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BootstrapState {
+    Configured,
+    Dialing,
+    Connected,
+    Degraded,
+}
+
+impl fmt::Display for BootstrapState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            BootstrapState::Configured => "CONFIGURED",
+            BootstrapState::Dialing => "DIALING",
+            BootstrapState::Connected => "CONNECTED",
+            BootstrapState::Degraded => "DEGRADED",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RelayReservationState {
+    #[default]
+    Inactive,
+    Attempting,
+    Reserved,
+    Failed,
+}
+
+impl fmt::Display for RelayReservationState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            RelayReservationState::Inactive => "INACTIVE",
+            RelayReservationState::Attempting => "ATTEMPTING",
+            RelayReservationState::Reserved => "RESERVED",
+            RelayReservationState::Failed => "FAILED",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootstrapPeerStatus {
+    pub address: String,
+    pub peer_id: Option<String>,
+    pub state: BootstrapState,
+    #[serde(default)]
+    pub relay_reservation: RelayReservationState,
+    pub reconnect_attempts: u32,
+    pub last_attempt_unix_ms: Option<u128>,
+    pub last_connected_unix_ms: Option<u128>,
+    #[serde(default)]
+    pub last_relay_reservation_attempt_unix_ms: Option<u128>,
+    #[serde(default)]
+    pub last_relay_reservation_success_unix_ms: Option<u128>,
+    #[serde(default)]
+    pub last_relay_reservation_error: Option<String>,
+    pub last_error: Option<String>,
+}
+
+impl BootstrapPeerStatus {
+    fn new(address: impl Into<String>) -> Self {
+        let address = address.into();
+        Self {
+            peer_id: peer_id_from_address(&address),
+            address,
+            state: BootstrapState::Configured,
+            relay_reservation: RelayReservationState::Inactive,
+            reconnect_attempts: 0,
+            last_attempt_unix_ms: None,
+            last_connected_unix_ms: None,
+            last_relay_reservation_attempt_unix_ms: None,
+            last_relay_reservation_success_unix_ms: None,
+            last_relay_reservation_error: None,
+            last_error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkTopologyInfo {
+    pub listen_addresses: Vec<String>,
+    pub observed_addresses: Vec<String>,
+    pub bootstrap_peers: Vec<BootstrapPeerStatus>,
+    pub reachability: NetworkReachability,
+    pub nat_detail: Option<String>,
+    pub last_updated_unix_ms: u128,
+}
+
+impl Default for NetworkTopologyInfo {
+    fn default() -> Self {
+        Self {
+            listen_addresses: Vec::new(),
+            observed_addresses: Vec::new(),
+            bootstrap_peers: Vec::new(),
+            reachability: NetworkReachability::Unknown,
+            nat_detail: None,
+            last_updated_unix_ms: unix_millis(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerRuntimeInfo {
     pub runtime_version: String,
@@ -106,7 +243,13 @@ impl PeerRuntimeInfo {
         }
     }
 
-    fn refresh(&mut self, uptime_secs: u64, node_state: NodeLifecycleState, transport_health: TransportHealth, runtime_ready: bool) {
+    fn refresh(
+        &mut self,
+        uptime_secs: u64,
+        node_state: NodeLifecycleState,
+        transport_health: TransportHealth,
+        runtime_ready: bool,
+    ) {
         self.uptime_secs = uptime_secs;
         self.node_state = node_state;
         self.transport_health = transport_health;
@@ -270,6 +413,20 @@ pub struct SessionInfo {
     pub encryption_state: String,
     pub last_activity_unix_ms: Option<u128>,
     pub transport_state: String,
+    #[serde(default)]
+    pub connection_path: ConnectionPath,
+    #[serde(default)]
+    pub relay_peer_id: Option<String>,
+    #[serde(default)]
+    pub relay_activation_reason: Option<String>,
+    #[serde(default)]
+    pub relay_established_at_unix_ms: Option<u128>,
+    #[serde(default)]
+    pub hole_punch_attempts: u32,
+    #[serde(default)]
+    pub hole_punch_successes: u32,
+    #[serde(default)]
+    pub direct_upgrade_attempts: u32,
     pub reconnect_attempts: u32,
     pub last_error: Option<String>,
     pub last_changed_unix_ms: u128,
@@ -285,6 +442,13 @@ impl Default for SessionInfo {
             encryption_state: "IDLE".to_string(),
             last_activity_unix_ms: None,
             transport_state: "UNKNOWN".to_string(),
+            connection_path: ConnectionPath::Unknown,
+            relay_peer_id: None,
+            relay_activation_reason: None,
+            relay_established_at_unix_ms: None,
+            hole_punch_attempts: 0,
+            hole_punch_successes: 0,
+            direct_upgrade_attempts: 0,
             reconnect_attempts: 0,
             last_error: None,
             last_changed_unix_ms: unix_millis(),
@@ -329,6 +493,8 @@ pub struct PeerTopology {
     pub local_runtime: Option<PeerRuntimeInfo>,
     pub dns: Option<DnsTopologyInfo>,
     pub runtime_shell: Option<RuntimeShellTopologyInfo>,
+    #[serde(default)]
+    pub network: Option<NetworkTopologyInfo>,
     pub mesh_state: MeshState,
     pub peers: BTreeMap<String, PeerRecord>,
     pub updated_unix_ms: u128,
@@ -341,6 +507,7 @@ impl PeerTopology {
             local_runtime: None,
             dns: None,
             runtime_shell: None,
+            network: None,
             mesh_state: MeshState::Bootstrapping,
             peers: BTreeMap::new(),
             updated_unix_ms: unix_millis(),
@@ -382,8 +549,10 @@ impl PeerTopology {
         peer_id: impl Into<String>,
         address: Option<String>,
         transport: impl Into<String>,
-    ) {
+    ) -> ConnectionPath {
         let peer_id = peer_id.into();
+        let now = unix_millis();
+        let connection_path = infer_connection_path(address.as_deref());
         let record = self
             .peers
             .entry(peer_id.clone())
@@ -395,10 +564,15 @@ impl PeerTopology {
         record.state = PeerConnectionState::Authenticating;
         record.transport_health = TransportHealth::Healthy;
         record.session.transport_state = "CONNECTED".to_string();
+        record.session.connection_path = connection_path;
+        if connection_path == ConnectionPath::Direct {
+            clear_relay_session(&mut record.session);
+        }
         record.session.last_error = None;
-        record.session.last_changed_unix_ms = unix_millis();
-        record.last_seen_unix_ms = unix_millis();
-        self.updated_unix_ms = unix_millis();
+        record.session.last_changed_unix_ms = now;
+        record.last_seen_unix_ms = now;
+        self.updated_unix_ms = now;
+        connection_path
     }
 
     pub fn observe_authenticated(&mut self, peer_id: impl Into<String>) {
@@ -458,6 +632,8 @@ impl PeerTopology {
             record.session.cipher = None;
             record.session.encryption_state = "OFFLINE".to_string();
             record.session.transport_state = "OFFLINE".to_string();
+            record.session.connection_path = ConnectionPath::Unknown;
+            clear_relay_session(&mut record.session);
             record.session.last_changed_unix_ms = unix_millis();
             if let Some(runtime) = record.runtime.as_mut() {
                 runtime.node_state = NodeLifecycleState::Offline;
@@ -500,11 +676,7 @@ impl PeerTopology {
         }
     }
 
-    pub fn observe_runtime_state(
-        &mut self,
-        peer_id: impl Into<String>,
-        runtime: PeerRuntimeInfo,
-    ) {
+    pub fn observe_runtime_state(&mut self, peer_id: impl Into<String>, runtime: PeerRuntimeInfo) {
         let peer_id = peer_id.into();
         let record = self
             .peers
@@ -554,6 +726,7 @@ impl PeerTopology {
         record.session.session_id = Some(session_id.into());
         record.session.encryption_state = "NEGOTIATING".to_string();
         record.session.transport_state = "GOSSIPSUB-DIRECT".to_string();
+        record.session.connection_path = ConnectionPath::Direct;
         record.session.last_activity_unix_ms = Some(now);
         record.session.last_changed_unix_ms = now;
         record.last_seen_unix_ms = now;
@@ -582,6 +755,7 @@ impl PeerTopology {
         }
         record.session.encryption_state = "ESTABLISHED".to_string();
         record.session.transport_state = "GOSSIPSUB-DIRECT".to_string();
+        record.session.connection_path = ConnectionPath::Direct;
         record.session.last_activity_unix_ms = Some(now);
         record.session.last_error = None;
         record.session.last_changed_unix_ms = now;
@@ -603,7 +777,11 @@ impl PeerTopology {
         self.updated_unix_ms = now;
     }
 
-    pub fn observe_session_failure(&mut self, peer_id: impl Into<String>, error: impl Into<String>) {
+    pub fn observe_session_failure(
+        &mut self,
+        peer_id: impl Into<String>,
+        error: impl Into<String>,
+    ) {
         let peer_id = peer_id.into();
         let record = self
             .peers
@@ -629,6 +807,281 @@ impl PeerTopology {
     pub fn set_runtime_shell_state(&mut self, runtime_shell: RuntimeShellTopologyInfo) {
         self.runtime_shell = Some(runtime_shell);
         self.updated_unix_ms = unix_millis();
+    }
+
+    pub fn set_listen_addresses(&mut self, listen_addresses: Vec<String>) {
+        let network = self.network.get_or_insert_with(NetworkTopologyInfo::default);
+        network.listen_addresses = dedupe_strings(listen_addresses);
+        network.reachability = infer_reachability(
+            &network.listen_addresses,
+            &network.observed_addresses,
+        );
+        network.last_updated_unix_ms = unix_millis();
+        self.updated_unix_ms = unix_millis();
+    }
+
+    pub fn configure_bootstrap(&mut self, bootstrap_addresses: Vec<String>) {
+        let network = self.network.get_or_insert_with(NetworkTopologyInfo::default);
+        network.bootstrap_peers = dedupe_strings(bootstrap_addresses)
+            .into_iter()
+            .map(BootstrapPeerStatus::new)
+            .collect();
+        network.last_updated_unix_ms = unix_millis();
+        self.updated_unix_ms = unix_millis();
+    }
+
+    pub fn observe_bootstrap_dial(&mut self, address: impl Into<String>) -> u32 {
+        let address = address.into();
+        let network = self.network.get_or_insert_with(NetworkTopologyInfo::default);
+        let record = bootstrap_record_mut(&mut network.bootstrap_peers, None, Some(address.as_str()));
+        let attempt = if let Some(record) = record {
+            record.reconnect_attempts = record.reconnect_attempts.saturating_add(1);
+            record.state = BootstrapState::Dialing;
+            record.last_attempt_unix_ms = Some(unix_millis());
+            record.last_error = None;
+            record.reconnect_attempts
+        } else {
+            network.bootstrap_peers.push(BootstrapPeerStatus::new(address));
+            let record = network.bootstrap_peers.last_mut().expect("bootstrap peer inserted");
+            record.reconnect_attempts = 1;
+            record.state = BootstrapState::Dialing;
+            record.last_attempt_unix_ms = Some(unix_millis());
+            record.reconnect_attempts
+        };
+        network.last_updated_unix_ms = unix_millis();
+        self.updated_unix_ms = unix_millis();
+        attempt
+    }
+
+    pub fn observe_bootstrap_connected(
+        &mut self,
+        peer_id: impl AsRef<str>,
+        address: Option<&str>,
+    ) -> bool {
+        let Some(network) = self.network.as_mut() else {
+            return false;
+        };
+        let Some(record) = bootstrap_record_mut(
+            &mut network.bootstrap_peers,
+            Some(peer_id.as_ref()),
+            address,
+        ) else {
+            return false;
+        };
+        record.peer_id.get_or_insert_with(|| peer_id.as_ref().to_string());
+        record.state = BootstrapState::Connected;
+        record.last_connected_unix_ms = Some(unix_millis());
+        record.last_error = None;
+        network.last_updated_unix_ms = unix_millis();
+        self.updated_unix_ms = unix_millis();
+        true
+    }
+
+    pub fn observe_relay_reservation_attempt(
+        &mut self,
+        peer_id: Option<&str>,
+        address: Option<&str>,
+    ) -> bool {
+        let Some(network) = self.network.as_mut() else {
+            return false;
+        };
+        let Some(record) = bootstrap_record_mut(&mut network.bootstrap_peers, peer_id, address) else {
+            return false;
+        };
+        record.relay_reservation = RelayReservationState::Attempting;
+        record.last_relay_reservation_attempt_unix_ms = Some(unix_millis());
+        record.last_relay_reservation_error = None;
+        network.last_updated_unix_ms = unix_millis();
+        self.updated_unix_ms = unix_millis();
+        true
+    }
+
+    pub fn observe_relay_reservation_accepted(
+        &mut self,
+        peer_id: Option<&str>,
+        address: Option<&str>,
+    ) -> bool {
+        let Some(network) = self.network.as_mut() else {
+            return false;
+        };
+        let Some(record) = bootstrap_record_mut(&mut network.bootstrap_peers, peer_id, address) else {
+            return false;
+        };
+        record.relay_reservation = RelayReservationState::Reserved;
+        record.last_relay_reservation_success_unix_ms = Some(unix_millis());
+        record.last_relay_reservation_error = None;
+        network.last_updated_unix_ms = unix_millis();
+        self.updated_unix_ms = unix_millis();
+        true
+    }
+
+    pub fn observe_relay_reservation_failed(
+        &mut self,
+        peer_id: Option<&str>,
+        address: Option<&str>,
+        error: impl Into<String>,
+    ) -> bool {
+        let Some(network) = self.network.as_mut() else {
+            return false;
+        };
+        let Some(record) = bootstrap_record_mut(&mut network.bootstrap_peers, peer_id, address) else {
+            return false;
+        };
+        record.relay_reservation = RelayReservationState::Failed;
+        record.last_relay_reservation_error = Some(error.into());
+        if record.last_relay_reservation_attempt_unix_ms.is_none() {
+            record.last_relay_reservation_attempt_unix_ms = Some(unix_millis());
+        }
+        network.last_updated_unix_ms = unix_millis();
+        self.updated_unix_ms = unix_millis();
+        true
+    }
+
+    pub fn observe_bootstrap_failure(
+        &mut self,
+        peer_id: Option<&str>,
+        address: Option<&str>,
+        error: impl Into<String>,
+    ) -> bool {
+        let Some(network) = self.network.as_mut() else {
+            return false;
+        };
+        let Some(record) = bootstrap_record_mut(&mut network.bootstrap_peers, peer_id, address) else {
+            return false;
+        };
+        record.state = BootstrapState::Degraded;
+        record.last_error = Some(error.into());
+        if record.last_attempt_unix_ms.is_none() {
+            record.last_attempt_unix_ms = Some(unix_millis());
+        }
+        network.last_updated_unix_ms = unix_millis();
+        self.updated_unix_ms = unix_millis();
+        true
+    }
+
+    pub fn observe_observed_address(&mut self, address: impl Into<String>) -> Option<NetworkReachability> {
+        let address = address.into();
+        if address.is_empty() {
+            return None;
+        }
+        let network = self.network.get_or_insert_with(NetworkTopologyInfo::default);
+        let previous = network.reachability;
+        merge_addresses(&mut network.observed_addresses, vec![address]);
+        network.reachability = infer_reachability(
+            &network.listen_addresses,
+            &network.observed_addresses,
+        );
+        network.last_updated_unix_ms = unix_millis();
+        self.updated_unix_ms = unix_millis();
+        if network.reachability != previous {
+            Some(network.reachability)
+        } else {
+            None
+        }
+    }
+
+    pub fn observe_nat_status(
+        &mut self,
+        status: impl Into<String>,
+        public_address: Option<String>,
+        confidence: usize,
+    ) -> Option<NetworkReachability> {
+        let status = status.into();
+        let network = self.network.get_or_insert_with(NetworkTopologyInfo::default);
+        let previous = network.reachability;
+        if let Some(address) = public_address.clone() {
+            merge_addresses(&mut network.observed_addresses, vec![address]);
+        }
+        network.nat_detail = Some(match public_address {
+            Some(address) => format!("status={status} public_address={address} confidence={confidence}"),
+            None => format!("status={status} confidence={confidence}"),
+        });
+        network.reachability = match status.as_str() {
+            "Public" => NetworkReachability::Public,
+            "Private" => NetworkReachability::Private,
+            _ => infer_reachability(&network.listen_addresses, &network.observed_addresses),
+        };
+        network.last_updated_unix_ms = unix_millis();
+        self.updated_unix_ms = unix_millis();
+        if network.reachability != previous {
+            Some(network.reachability)
+        } else {
+            None
+        }
+    }
+
+    pub fn observe_relay_session(
+        &mut self,
+        peer_id: impl Into<String>,
+        relay_peer_id: Option<String>,
+        reason: impl Into<String>,
+    ) {
+        let peer_id = peer_id.into();
+        let now = unix_millis();
+        let record = self
+            .peers
+            .entry(peer_id.clone())
+            .or_insert_with(|| PeerRecord::new(peer_id));
+        record.session.connection_path = ConnectionPath::Relay;
+        record.session.transport_state = "RELAY-CIRCUIT".to_string();
+        record.session.relay_peer_id = relay_peer_id;
+        record.session.relay_activation_reason = Some(reason.into());
+        record.session.relay_established_at_unix_ms.get_or_insert(now);
+        record.session.last_changed_unix_ms = now;
+        record.last_seen_unix_ms = now;
+        self.updated_unix_ms = now;
+    }
+
+    pub fn observe_hole_punch_attempt(&mut self, peer_id: impl Into<String>) {
+        let peer_id = peer_id.into();
+        let now = unix_millis();
+        let record = self
+            .peers
+            .entry(peer_id.clone())
+            .or_insert_with(|| PeerRecord::new(peer_id));
+        record.session.hole_punch_attempts = record.session.hole_punch_attempts.saturating_add(1);
+        record.session.direct_upgrade_attempts = record.session.direct_upgrade_attempts.saturating_add(1);
+        record.session.last_changed_unix_ms = now;
+        record.last_seen_unix_ms = now;
+        self.updated_unix_ms = now;
+    }
+
+    pub fn observe_hole_punch_succeeded(&mut self, peer_id: impl Into<String>) {
+        let peer_id = peer_id.into();
+        let now = unix_millis();
+        let record = self
+            .peers
+            .entry(peer_id.clone())
+            .or_insert_with(|| PeerRecord::new(peer_id));
+        record.session.hole_punch_successes = record.session.hole_punch_successes.saturating_add(1);
+        record.session.last_error = None;
+        record.session.last_changed_unix_ms = now;
+        record.last_seen_unix_ms = now;
+        self.updated_unix_ms = now;
+    }
+
+    pub fn observe_hole_punch_failed(
+        &mut self,
+        peer_id: impl Into<String>,
+        error: impl Into<String>,
+    ) {
+        let peer_id = peer_id.into();
+        let now = unix_millis();
+        let record = self
+            .peers
+            .entry(peer_id.clone())
+            .or_insert_with(|| PeerRecord::new(peer_id));
+        record.session.last_error = Some(error.into());
+        record.session.last_changed_unix_ms = now;
+        record.last_seen_unix_ms = now;
+        self.updated_unix_ms = now;
+    }
+
+    pub fn network_reachability(&self) -> NetworkReachability {
+        self.network
+            .as_ref()
+            .map(|network| network.reachability)
+            .unwrap_or(NetworkReachability::Unknown)
     }
 
     pub fn refresh_local_runtime(
@@ -848,10 +1301,10 @@ impl PeerTopology {
     }
 
     pub fn render_sessions(&self) -> String {
-        let mut lines = vec!["PEER ID                                            SESSION ID           STATE         LAST ACTIVITY   TRANSPORT         CIPHER               LAST ERROR".to_string()];
+        let mut lines = vec!["PEER ID                                            SESSION ID           STATE         LAST ACTIVITY   TRANSPORT         PATH     CIPHER               LAST ERROR".to_string()];
         for peer in self.peers.values() {
             lines.push(format!(
-                "{:<50} {:<20} {:<13} {:<15} {:<17} {:<20} {}",
+                "{:<50} {:<20} {:<13} {:<15} {:<17} {:<8} {:<20} {}",
                 peer.peer_id,
                 peer.session.session_id.as_deref().unwrap_or("-"),
                 peer.session.encryption_state,
@@ -860,6 +1313,7 @@ impl PeerTopology {
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
                 peer.session.transport_state,
+                peer.session.connection_path,
                 peer.session.cipher.as_deref().unwrap_or("-"),
                 peer.session.last_error.as_deref().unwrap_or("-"),
             ));
@@ -890,15 +1344,57 @@ impl PeerTopology {
             format!("runtime_ready_peers={ready}"),
             format!("encrypted_sessions={encrypted}"),
             format!("degraded_peers={degraded}"),
+            format!("direct_connections={}", self.direct_connection_count()),
+            format!("relay_connections={}", self.relay_connection_count()),
+            format!("hole_punch_attempts={}", self.hole_punch_attempt_count()),
+            format!("hole_punch_successes={}", self.hole_punch_success_count()),
             format!("updated_unix_ms={}", self.updated_unix_ms),
         ];
+
+        if let Some(network) = &self.network {
+            lines.push(format!("network_reachability={}", network.reachability));
+            lines.push(format!(
+                "network_listen_addresses={}",
+                if network.listen_addresses.is_empty() {
+                    "-".to_string()
+                } else {
+                    network.listen_addresses.join(",")
+                }
+            ));
+            lines.push(format!(
+                "network_observed_addresses={}",
+                if network.observed_addresses.is_empty() {
+                    "-".to_string()
+                } else {
+                    network.observed_addresses.join(",")
+                }
+            ));
+            lines.push(format!(
+                "network_bootstrap_configured={}",
+                network.bootstrap_peers.len()
+            ));
+            lines.push(format!(
+                "network_bootstrap_connected={}",
+                self.connected_bootstrap_count()
+            ));
+            lines.push(format!(
+                "network_bootstrap_degraded={}",
+                self.degraded_bootstrap_count()
+            ));
+            if let Some(detail) = &network.nat_detail {
+                lines.push(format!("network_nat_detail={detail}"));
+            }
+        }
 
         if let Some(runtime) = &self.local_runtime {
             lines.push(format!("local_runtime_version={}", runtime.runtime_version));
             lines.push(format!("local_runtime_state={}", runtime.node_state));
             lines.push(format!("local_runtime_ready={}", runtime.runtime_ready));
             lines.push(format!("local_runtime_uptime_secs={}", runtime.uptime_secs));
-            lines.push(format!("local_transport_health={}", runtime.transport_health));
+            lines.push(format!(
+                "local_transport_health={}",
+                runtime.transport_health
+            ));
         }
         if let Some(dns) = &self.dns {
             lines.push(format!("dns_cache_entries={}", dns.cache_entries));
@@ -917,24 +1413,78 @@ impl PeerTopology {
             }
         }
         if let Some(runtime_shell) = &self.runtime_shell {
-            lines.push(format!("runtime_shell_mounts={}", runtime_shell.mounted_surfaces));
-            lines.push(format!("runtime_shell_sessions={}", runtime_shell.active_sessions));
-            lines.push(format!("runtime_shell_permissions={}", runtime_shell.active_permissions));
-            lines.push(format!("runtime_shell_failed_mounts={}", runtime_shell.failed_mounts));
-            lines.push(format!("runtime_shell_registry_entries={}", runtime_shell.registry_entries));
-            lines.push(format!("runtime_shell_ui_surfaces={}", runtime_shell.ui_surfaces));
-            lines.push(format!("runtime_shell_gateway_registrations={}", runtime_shell.gateway_registrations));
-            lines.push(format!("runtime_shell_gateway_mounts={}", runtime_shell.gateway_mounts));
-            lines.push(format!("runtime_shell_gateway_active_routes={}", runtime_shell.gateway_active_routes));
-            lines.push(format!("runtime_shell_gateway_permission_grants={}", runtime_shell.gateway_permission_grants));
-            lines.push(format!("runtime_shell_gateway_bridge_failures={}", runtime_shell.gateway_bridge_failures));
-            lines.push(format!("runtime_shell_gateway_bridge_sessions={}", runtime_shell.gateway_bridge_sessions));
-            lines.push(format!("runtime_shell_gateway_snapshot_entries={}", runtime_shell.gateway_snapshot_entries));
-            lines.push(format!("runtime_shell_state_revisions={}", runtime_shell.state_revisions));
-            lines.push(format!("runtime_shell_rerender_count={}", runtime_shell.rerender_count));
-            lines.push(format!("runtime_shell_hot_reload_count={}", runtime_shell.hot_reload_count));
-            lines.push(format!("runtime_shell_sync_count={}", runtime_shell.sync_count));
-            lines.push(format!("runtime_shell_permission_denials={}", runtime_shell.permission_denials));
+            lines.push(format!(
+                "runtime_shell_mounts={}",
+                runtime_shell.mounted_surfaces
+            ));
+            lines.push(format!(
+                "runtime_shell_sessions={}",
+                runtime_shell.active_sessions
+            ));
+            lines.push(format!(
+                "runtime_shell_permissions={}",
+                runtime_shell.active_permissions
+            ));
+            lines.push(format!(
+                "runtime_shell_failed_mounts={}",
+                runtime_shell.failed_mounts
+            ));
+            lines.push(format!(
+                "runtime_shell_registry_entries={}",
+                runtime_shell.registry_entries
+            ));
+            lines.push(format!(
+                "runtime_shell_ui_surfaces={}",
+                runtime_shell.ui_surfaces
+            ));
+            lines.push(format!(
+                "runtime_shell_gateway_registrations={}",
+                runtime_shell.gateway_registrations
+            ));
+            lines.push(format!(
+                "runtime_shell_gateway_mounts={}",
+                runtime_shell.gateway_mounts
+            ));
+            lines.push(format!(
+                "runtime_shell_gateway_active_routes={}",
+                runtime_shell.gateway_active_routes
+            ));
+            lines.push(format!(
+                "runtime_shell_gateway_permission_grants={}",
+                runtime_shell.gateway_permission_grants
+            ));
+            lines.push(format!(
+                "runtime_shell_gateway_bridge_failures={}",
+                runtime_shell.gateway_bridge_failures
+            ));
+            lines.push(format!(
+                "runtime_shell_gateway_bridge_sessions={}",
+                runtime_shell.gateway_bridge_sessions
+            ));
+            lines.push(format!(
+                "runtime_shell_gateway_snapshot_entries={}",
+                runtime_shell.gateway_snapshot_entries
+            ));
+            lines.push(format!(
+                "runtime_shell_state_revisions={}",
+                runtime_shell.state_revisions
+            ));
+            lines.push(format!(
+                "runtime_shell_rerender_count={}",
+                runtime_shell.rerender_count
+            ));
+            lines.push(format!(
+                "runtime_shell_hot_reload_count={}",
+                runtime_shell.hot_reload_count
+            ));
+            lines.push(format!(
+                "runtime_shell_sync_count={}",
+                runtime_shell.sync_count
+            ));
+            lines.push(format!(
+                "runtime_shell_permission_denials={}",
+                runtime_shell.permission_denials
+            ));
             if let Some(latency_ms) = runtime_shell.last_mount_latency_ms {
                 lines.push(format!("runtime_shell_mount_latency_ms={latency_ms}"));
             }
@@ -951,23 +1501,238 @@ impl PeerTopology {
                 lines.push(format!("runtime_shell_gateway_last_route={route}"));
             }
             if let Some(target) = &runtime_shell.gateway_last_external_target {
-                lines.push(format!("runtime_shell_gateway_last_external_target={target}"));
+                lines.push(format!(
+                    "runtime_shell_gateway_last_external_target={target}"
+                ));
             }
             if let Some(state) = &runtime_shell.gateway_last_bridge_state {
                 lines.push(format!("runtime_shell_gateway_last_bridge_state={state}"));
             }
             if let Some(cache_state) = &runtime_shell.gateway_last_cache_state {
-                lines.push(format!("runtime_shell_gateway_last_cache_state={cache_state}"));
+                lines.push(format!(
+                    "runtime_shell_gateway_last_cache_state={cache_state}"
+                ));
             }
             if let Some(latency_ms) = runtime_shell.gateway_last_fetch_latency_ms {
-                lines.push(format!("runtime_shell_gateway_last_fetch_latency_ms={latency_ms}"));
+                lines.push(format!(
+                    "runtime_shell_gateway_last_fetch_latency_ms={latency_ms}"
+                ));
             }
             if let Some(response_size) = runtime_shell.gateway_last_response_size {
-                lines.push(format!("runtime_shell_gateway_last_response_size={response_size}"));
+                lines.push(format!(
+                    "runtime_shell_gateway_last_response_size={response_size}"
+                ));
             }
         }
 
         lines.join("\n")
+    }
+
+    pub fn render_network_status(&self) -> String {
+        let mut lines = vec![format!("local_peer={}", self.local_peer_id)];
+        lines.push(format!("mesh_state={}", self.mesh_state));
+        lines.push(format!("reachability={}", self.network_reachability()));
+        lines.push(format!("direct_connections={}", self.direct_connection_count()));
+        lines.push(format!("relay_connections={}", self.relay_connection_count()));
+        lines.push(format!("relay_reservations={}", self.reserved_relay_count()));
+        lines.push(format!("hole_punch_attempts={}", self.hole_punch_attempt_count()));
+        lines.push(format!("hole_punch_successes={}", self.hole_punch_success_count()));
+        lines.push(format!("bootstrap_connected={}", self.connected_bootstrap_count()));
+        lines.push(format!("bootstrap_degraded={}", self.degraded_bootstrap_count()));
+        if let Some(network) = &self.network {
+            lines.push(format!(
+                "listen_addresses={}",
+                if network.listen_addresses.is_empty() {
+                    "-".to_string()
+                } else {
+                    network.listen_addresses.join(",")
+                }
+            ));
+            lines.push(format!(
+                "observed_addresses={}",
+                if network.observed_addresses.is_empty() {
+                    "-".to_string()
+                } else {
+                    network.observed_addresses.join(",")
+                }
+            ));
+        }
+        lines.join("\n")
+    }
+
+    pub fn render_network_reachability(&self) -> String {
+        let mut lines = vec![format!("reachability={}", self.network_reachability())];
+        let Some(network) = &self.network else {
+            lines.push("nat_detail=-".to_string());
+            lines.push("observed_addresses=-".to_string());
+            lines.push("listen_addresses=-".to_string());
+            return lines.join("\n");
+        };
+        lines.push(format!(
+            "nat_detail={}",
+            network.nat_detail.as_deref().unwrap_or("-")
+        ));
+        lines.push(format!(
+            "observed_addresses={}",
+            if network.observed_addresses.is_empty() {
+                "-".to_string()
+            } else {
+                network.observed_addresses.join(",")
+            }
+        ));
+        lines.push(format!(
+            "listen_addresses={}",
+            if network.listen_addresses.is_empty() {
+                "-".to_string()
+            } else {
+                network.listen_addresses.join(",")
+            }
+        ));
+        lines.join("\n")
+    }
+
+    pub fn render_network_bootstrap(&self) -> String {
+        let mut lines = vec!["BOOTSTRAP ADDRESS                                   PEER ID                                            STATE       RESERVATION ATTEMPTS LAST CONNECTED   LAST ERROR".to_string()];
+        let Some(network) = &self.network else {
+            lines.push("no bootstrap peers configured".to_string());
+            return lines.join("\n");
+        };
+        if network.bootstrap_peers.is_empty() {
+            lines.push("no bootstrap peers configured".to_string());
+            return lines.join("\n");
+        }
+        for bootstrap in &network.bootstrap_peers {
+            lines.push(format!(
+                "{:<51} {:<50} {:<11} {:<11} {:<8} {:<16} {}",
+                bootstrap.address,
+                bootstrap.peer_id.as_deref().unwrap_or("-"),
+                bootstrap.state,
+                bootstrap.relay_reservation,
+                bootstrap.reconnect_attempts,
+                bootstrap
+                    .last_connected_unix_ms
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                bootstrap.last_error.as_deref().unwrap_or("-"),
+            ));
+        }
+        lines.join("\n")
+    }
+
+    pub fn render_network_peers(&self) -> String {
+        let mut lines = vec!["PEER ID                                            STATE           PATH     LATENCY   HEALTH       RECONNECTS LAST ERROR".to_string()];
+        if self.peers.is_empty() {
+            lines.push("no peers observed".to_string());
+            return lines.join("\n");
+        }
+        for peer in self.peers.values() {
+            lines.push(format!(
+                "{:<50} {:<15} {:<8} {:<9} {:<12} {:<10} {}",
+                peer.peer_id,
+                peer.state,
+                peer.session.connection_path,
+                peer.latency_ms
+                    .map(|latency| format!("{latency}ms"))
+                    .unwrap_or_else(|| "-".to_string()),
+                peer.transport_health,
+                peer.session.reconnect_attempts,
+                peer.session.last_error.as_deref().unwrap_or("-"),
+            ));
+        }
+        lines.join("\n")
+    }
+
+    pub fn render_network_relays(&self) -> String {
+        let relay_bootstrap: Vec<&BootstrapPeerStatus> = self
+            .network
+            .as_ref()
+            .map(|network| {
+                network
+                    .bootstrap_peers
+                    .iter()
+                    .filter(|bootstrap| bootstrap.relay_reservation != RelayReservationState::Inactive)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let relay_peers: Vec<&PeerRecord> = self
+            .peers
+            .values()
+            .filter(|peer| peer.session.connection_path == ConnectionPath::Relay)
+            .collect();
+        let mut lines = vec![format!("relay_reservations={}", self.reserved_relay_count())];
+        lines.push(format!("relay_connections={}", relay_peers.len()));
+        if relay_bootstrap.is_empty() && relay_peers.is_empty() {
+            lines.push("relay_state=inactive".to_string());
+            lines.push("note=relay fallback is not active in the current topology snapshot".to_string());
+            return lines.join("\n");
+        }
+        for bootstrap in relay_bootstrap {
+            lines.push(format!(
+                "reservation relay_peer={} state={} last_error={}",
+                bootstrap.peer_id.as_deref().unwrap_or("unknown"),
+                bootstrap.relay_reservation,
+                bootstrap
+                    .last_relay_reservation_error
+                    .as_deref()
+                    .unwrap_or("-")
+            ));
+        }
+        for peer in relay_peers {
+            lines.push(format!(
+                "peer={} relay_peer={} transport={} reason={} relay_age_secs={} latency={} last_error={}",
+                peer.peer_id,
+                peer.session.relay_peer_id.as_deref().unwrap_or("unknown"),
+                peer.transport.as_deref().unwrap_or("-"),
+                peer.session.relay_activation_reason.as_deref().unwrap_or("-"),
+                peer
+                    .session
+                    .relay_established_at_unix_ms
+                    .map(relay_age_secs)
+                    .unwrap_or_default(),
+                peer.latency_ms
+                    .map(|latency| format!("{latency}ms"))
+                    .unwrap_or_else(|| "-".to_string()),
+                peer.session.last_error.as_deref().unwrap_or("-"),
+            ));
+        }
+        lines.join("\n")
+    }
+
+    pub fn render_network_sessions(&self) -> String {
+        let mut lines = vec!["PEER ID                                            PATH     RELAY PEER                                         HOLE PUNCH  DIRECT UPGRADE  REASON               LAST ERROR".to_string()];
+        if self.peers.is_empty() {
+            lines.push("no peer sessions observed".to_string());
+            return lines.join("\n");
+        }
+        for peer in self.peers.values() {
+            lines.push(format!(
+                "{:<50} {:<8} {:<50} {:<11} {:<15} {:<20} {}",
+                peer.peer_id,
+                peer.session.connection_path,
+                peer.session.relay_peer_id.as_deref().unwrap_or("-"),
+                format!(
+                    "{}/{}",
+                    peer.session.hole_punch_successes,
+                    peer.session.hole_punch_attempts
+                ),
+                peer.session.direct_upgrade_attempts,
+                peer.session.relay_activation_reason.as_deref().unwrap_or("-"),
+                peer.session.last_error.as_deref().unwrap_or("-"),
+            ));
+        }
+        lines.join("\n")
+    }
+
+    pub fn render_network_diagnostics(&self) -> String {
+        let mut sections = vec![
+            self.render_network_status(),
+            self.render_network_reachability(),
+            self.render_network_bootstrap(),
+            self.render_network_peers(),
+            self.render_network_sessions(),
+        ];
+        sections.push(self.render_network_relays());
+        sections.join("\n\n")
     }
 
     fn set_state(&mut self, peer_id: impl Into<String>, state: PeerConnectionState) {
@@ -980,6 +1745,73 @@ impl PeerTopology {
         record.last_seen_unix_ms = unix_millis();
         self.updated_unix_ms = unix_millis();
     }
+
+    fn direct_connection_count(&self) -> usize {
+        self.peers
+            .values()
+            .filter(|peer| peer.session.connection_path == ConnectionPath::Direct)
+            .count()
+    }
+
+    fn relay_connection_count(&self) -> usize {
+        self.peers
+            .values()
+            .filter(|peer| peer.session.connection_path == ConnectionPath::Relay)
+            .count()
+    }
+
+    fn reserved_relay_count(&self) -> usize {
+        self.network
+            .as_ref()
+            .map(|network| {
+                network
+                    .bootstrap_peers
+                    .iter()
+                    .filter(|bootstrap| bootstrap.relay_reservation == RelayReservationState::Reserved)
+                    .count()
+            })
+            .unwrap_or_default()
+    }
+
+    fn hole_punch_attempt_count(&self) -> u32 {
+        self.peers
+            .values()
+            .map(|peer| peer.session.hole_punch_attempts)
+            .sum()
+    }
+
+    fn hole_punch_success_count(&self) -> u32 {
+        self.peers
+            .values()
+            .map(|peer| peer.session.hole_punch_successes)
+            .sum()
+    }
+
+    fn connected_bootstrap_count(&self) -> usize {
+        self.network
+            .as_ref()
+            .map(|network| {
+                network
+                    .bootstrap_peers
+                    .iter()
+                    .filter(|bootstrap| bootstrap.state == BootstrapState::Connected)
+                    .count()
+            })
+            .unwrap_or_default()
+    }
+
+    fn degraded_bootstrap_count(&self) -> usize {
+        self.network
+            .as_ref()
+            .map(|network| {
+                network
+                    .bootstrap_peers
+                    .iter()
+                    .filter(|bootstrap| bootstrap.state == BootstrapState::Degraded)
+                    .count()
+            })
+            .unwrap_or_default()
+    }
 }
 
 fn render_runtime_lines(peer_id: &str, runtime: &PeerRuntimeInfo) -> Vec<String> {
@@ -989,7 +1821,10 @@ fn render_runtime_lines(peer_id: &str, runtime: &PeerRuntimeInfo) -> Vec<String>
         format!("[{peer_id}] uptime_secs={}", runtime.uptime_secs),
         format!("[{peer_id}] runtime_ready={}", runtime.runtime_ready),
         format!("[{peer_id}] transport_health={}", runtime.transport_health),
-        format!("[{peer_id}] capabilities={}", runtime.capabilities.join(",")),
+        format!(
+            "[{peer_id}] capabilities={}",
+            runtime.capabilities.join(",")
+        ),
     ]
 }
 
@@ -999,6 +1834,100 @@ fn merge_addresses(existing: &mut Vec<String>, incoming: Vec<String>) {
             existing.push(address);
         }
     }
+}
+
+fn dedupe_strings(items: Vec<String>) -> Vec<String> {
+    let mut items = items;
+    items.sort();
+    items.dedup();
+    items
+}
+
+fn bootstrap_record_mut<'a>(
+    records: &'a mut [BootstrapPeerStatus],
+    peer_id: Option<&str>,
+    address: Option<&str>,
+) -> Option<&'a mut BootstrapPeerStatus> {
+    records.iter_mut().find(|record| {
+        peer_id
+            .map(|candidate| record.peer_id.as_deref() == Some(candidate))
+            .unwrap_or(false)
+            || address.map(|candidate| record.address == candidate).unwrap_or(false)
+    })
+}
+
+fn peer_id_from_address(address: &str) -> Option<String> {
+    address.split("/p2p/").nth(1).map(str::to_string)
+}
+
+fn clear_relay_session(session: &mut SessionInfo) {
+    session.relay_peer_id = None;
+    session.relay_activation_reason = None;
+    session.relay_established_at_unix_ms = None;
+}
+
+fn relay_age_secs(established_at_unix_ms: u128) -> u128 {
+    unix_millis().saturating_sub(established_at_unix_ms) / 1000
+}
+
+fn infer_connection_path(address: Option<&str>) -> ConnectionPath {
+    match address {
+        Some(address) if address.contains("/p2p-circuit") => ConnectionPath::Relay,
+        Some(_) => ConnectionPath::Direct,
+        None => ConnectionPath::Unknown,
+    }
+}
+
+fn infer_reachability(
+    listen_addresses: &[String],
+    observed_addresses: &[String],
+) -> NetworkReachability {
+    observed_addresses
+        .iter()
+        .chain(listen_addresses.iter())
+        .filter_map(|address| parse_address_reachability(address))
+        .max_by_key(|reachability| match reachability {
+            NetworkReachability::Unknown => 0,
+            NetworkReachability::Private => 1,
+            NetworkReachability::Public => 2,
+        })
+        .unwrap_or(NetworkReachability::Unknown)
+}
+
+fn parse_address_reachability(address: &str) -> Option<NetworkReachability> {
+    let Ok(address) = address.parse::<Multiaddr>() else {
+        return None;
+    };
+    address.iter().find_map(|protocol| match protocol {
+        Protocol::Ip4(ip) => classify_ip(IpAddr::V4(ip)),
+        Protocol::Ip6(ip) => classify_ip(IpAddr::V6(ip)),
+        _ => None,
+    })
+}
+
+fn classify_ip(address: IpAddr) -> Option<NetworkReachability> {
+    match address {
+        IpAddr::V4(ip)
+            if ip.is_unspecified() || ip.is_loopback() || ip.is_link_local() =>
+        {
+            Some(NetworkReachability::Unknown)
+        }
+        IpAddr::V4(ip) if is_private_v4(ip) => Some(NetworkReachability::Private),
+        IpAddr::V4(_) => Some(NetworkReachability::Public),
+        IpAddr::V6(ip) if ip.is_unspecified() || ip.is_loopback() => {
+            Some(NetworkReachability::Unknown)
+        }
+        IpAddr::V6(ip) if is_private_v6(ip) => Some(NetworkReachability::Private),
+        IpAddr::V6(_) => Some(NetworkReachability::Public),
+    }
+}
+
+fn is_private_v4(ip: Ipv4Addr) -> bool {
+    ip.is_private() || ip.is_link_local() || ip.is_broadcast()
+}
+
+fn is_private_v6(ip: Ipv6Addr) -> bool {
+    ip.is_unique_local() || ip.is_unicast_link_local()
 }
 
 fn normalize_capabilities(mut capabilities: Vec<String>) -> Vec<String> {
@@ -1075,7 +2004,36 @@ mod tests {
             ),
         );
 
-        assert!(topology.render_runtime().contains("runtime_version=voidnet/0.1.0"));
+        assert!(topology
+            .render_runtime()
+            .contains("runtime_version=voidnet/0.1.0"));
         assert!(topology.render_sessions().contains("libp2p-quic"));
+    }
+
+    #[test]
+    fn tracks_bootstrap_and_reachability_diagnostics() {
+        let mut topology = PeerTopology::new("local");
+        topology.set_listen_addresses(vec!["/ip4/0.0.0.0/udp/40100/quic-v1".into()]);
+        topology.configure_bootstrap(vec![
+            "/ip4/203.0.113.10/udp/40100/quic-v1/p2p/12D3KooWbootstrap".into(),
+        ]);
+
+        let attempt = topology.observe_bootstrap_dial(
+            "/ip4/203.0.113.10/udp/40100/quic-v1/p2p/12D3KooWbootstrap",
+        );
+        assert_eq!(attempt, 1);
+        assert!(topology.observe_bootstrap_connected(
+            "12D3KooWbootstrap",
+            Some("/ip4/203.0.113.10/udp/40100/quic-v1/p2p/12D3KooWbootstrap"),
+        ));
+        assert_eq!(
+            topology.observe_observed_address("/ip4/198.51.100.22/udp/40100/quic-v1"),
+            Some(NetworkReachability::Public)
+        );
+
+        let diagnostics = topology.render_network_diagnostics();
+        assert!(diagnostics.contains("bootstrap_connected=1"));
+        assert!(diagnostics.contains("reachability=PUBLIC"));
+        assert!(diagnostics.contains("12D3KooWbootstrap"));
     }
 }

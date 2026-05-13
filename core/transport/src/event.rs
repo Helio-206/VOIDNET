@@ -1,6 +1,6 @@
 use crate::{
     lifecycle::NodeLifecycleState,
-    topology::{MeshState, PeerConnectionState, PeerRuntimeInfo},
+    topology::{MeshState, NetworkReachability, PeerConnectionState, PeerRuntimeInfo},
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -222,6 +222,74 @@ pub enum TransportEvent {
         capability: String,
         reason: String,
     },
+    BootstrapConfigured {
+        peers: usize,
+    },
+    BootstrapDialAttempt {
+        peer_id: Option<String>,
+        address: String,
+        attempt: u32,
+    },
+    BootstrapConnected {
+        peer_id: String,
+        address: Option<String>,
+    },
+    NatStatusChanged {
+        status: String,
+        public_address: Option<String>,
+        confidence: usize,
+    },
+    RelayReservationAttempted {
+        relay_peer_id: String,
+        address: String,
+    },
+    RelayReservationAccepted {
+        relay_peer_id: String,
+        renewal: bool,
+    },
+    RelayReservationFailed {
+        relay_peer_id: Option<String>,
+        address: Option<String>,
+        error: String,
+    },
+    RelayFallbackActivated {
+        peer_id: String,
+        relay_peer_id: Option<String>,
+        reason: String,
+    },
+    RelayCircuitEstablished {
+        peer_id: String,
+        relay_peer_id: Option<String>,
+        address: Option<String>,
+    },
+    RelaySessionEstablished {
+        peer_id: String,
+        relay_peer_id: Option<String>,
+        address: Option<String>,
+    },
+    HolePunchAttempt {
+        peer_id: String,
+        relay_peer_id: Option<String>,
+    },
+    HolePunchSucceeded {
+        peer_id: String,
+    },
+    HolePunchFailed {
+        peer_id: String,
+        error: String,
+    },
+    DirectUpgradeSucceeded {
+        peer_id: String,
+    },
+    DirectUpgradeFailed {
+        peer_id: String,
+        error: String,
+    },
+    ReachabilityChanged {
+        reachability: NetworkReachability,
+        observed_address: Option<String>,
+        detail: String,
+    },
     Listening {
         address: String,
     },
@@ -242,6 +310,10 @@ pub enum TransportEvent {
     PeerDisconnected {
         peer_id: String,
         reason: String,
+    },
+    DirectConnectionEstablished {
+        peer_id: String,
+        address: Option<String>,
     },
     TransportConnected {
         peer_id: String,
@@ -762,6 +834,103 @@ impl TransportEvent {
             } => format!(
                 "[VOIDNET][RUNTIME] CapabilityRejected peer={peer_id} capability={capability} reason={reason}"
             ),
+            TransportEvent::BootstrapConfigured { peers } => {
+                format!("[VOIDNET][NETWORK] BootstrapConfigured peers={peers}")
+            }
+            TransportEvent::BootstrapDialAttempt {
+                peer_id,
+                address,
+                attempt,
+            } => format!(
+                "[VOIDNET][NETWORK] BootstrapDialAttempt peer={} address={address} attempt={attempt}",
+                peer_id.as_deref().unwrap_or("unknown")
+            ),
+            TransportEvent::BootstrapConnected { peer_id, address } => format!(
+                "[VOIDNET][NETWORK] BootstrapConnected peer={peer_id} address={}",
+                address.as_deref().unwrap_or("unknown")
+            ),
+            TransportEvent::NatStatusChanged {
+                status,
+                public_address,
+                confidence,
+            } => format!(
+                "[VOIDNET][NETWORK] NatStatusChanged status={status} public_address={} confidence={confidence}",
+                public_address.as_deref().unwrap_or("unknown")
+            ),
+            TransportEvent::RelayReservationAttempted {
+                relay_peer_id,
+                address,
+            } => format!(
+                "[VOIDNET][NETWORK] RelayReservationAttempted relay_peer={relay_peer_id} address={address}"
+            ),
+            TransportEvent::RelayReservationAccepted {
+                relay_peer_id,
+                renewal,
+            } => format!(
+                "[VOIDNET][NETWORK] RelayReservationAccepted relay_peer={relay_peer_id} renewal={renewal}"
+            ),
+            TransportEvent::RelayReservationFailed {
+                relay_peer_id,
+                address,
+                error,
+            } => format!(
+                "[VOIDNET][NETWORK] RelayReservationFailed relay_peer={} address={} error={error}",
+                relay_peer_id.as_deref().unwrap_or("unknown"),
+                address.as_deref().unwrap_or("unknown")
+            ),
+            TransportEvent::RelayFallbackActivated {
+                peer_id,
+                relay_peer_id,
+                reason,
+            } => format!(
+                "[VOIDNET][NETWORK] RelayFallbackActivated peer={peer_id} relay_peer={} reason={reason}",
+                relay_peer_id.as_deref().unwrap_or("unknown")
+            ),
+            TransportEvent::RelayCircuitEstablished {
+                peer_id,
+                relay_peer_id,
+                address,
+            } => format!(
+                "[VOIDNET][NETWORK] RelayCircuitEstablished peer={peer_id} relay_peer={} address={}",
+                relay_peer_id.as_deref().unwrap_or("unknown"),
+                address.as_deref().unwrap_or("unknown")
+            ),
+            TransportEvent::RelaySessionEstablished {
+                peer_id,
+                relay_peer_id,
+                address,
+            } => format!(
+                "[VOIDNET][NETWORK] RelaySessionEstablished peer={peer_id} relay_peer={} address={}",
+                relay_peer_id.as_deref().unwrap_or("unknown"),
+                address.as_deref().unwrap_or("unknown")
+            ),
+            TransportEvent::HolePunchAttempt {
+                peer_id,
+                relay_peer_id,
+            } => format!(
+                "[VOIDNET][NETWORK] HolePunchAttempt peer={peer_id} relay_peer={}",
+                relay_peer_id.as_deref().unwrap_or("unknown")
+            ),
+            TransportEvent::HolePunchSucceeded { peer_id } => format!(
+                "[VOIDNET][NETWORK] HolePunchSucceeded peer={peer_id}"
+            ),
+            TransportEvent::HolePunchFailed { peer_id, error } => format!(
+                "[VOIDNET][NETWORK] HolePunchFailed peer={peer_id} error={error}"
+            ),
+            TransportEvent::DirectUpgradeSucceeded { peer_id } => format!(
+                "[VOIDNET][NETWORK] DirectUpgradeSucceeded peer={peer_id}"
+            ),
+            TransportEvent::DirectUpgradeFailed { peer_id, error } => format!(
+                "[VOIDNET][NETWORK] DirectUpgradeFailed peer={peer_id} error={error}"
+            ),
+            TransportEvent::ReachabilityChanged {
+                reachability,
+                observed_address,
+                detail,
+            } => format!(
+                "[VOIDNET][NETWORK] ReachabilityChanged reachability={reachability} observed_address={} detail={detail}",
+                observed_address.as_deref().unwrap_or("unknown")
+            ),
             TransportEvent::Listening { address } => {
                 format!("[VOIDNET][TRANSPORT] Listening address={address} transport=quic-v1")
             }
@@ -792,6 +961,10 @@ impl TransportEvent {
             TransportEvent::PeerDisconnected { peer_id, reason } => {
                 format!("[VOIDNET][TRANSPORT] PeerDisconnected peer={peer_id} reason={reason}")
             }
+            TransportEvent::DirectConnectionEstablished { peer_id, address } => format!(
+                "[VOIDNET][NETWORK] DirectSessionEstablished peer={peer_id} address={}",
+                address.as_deref().unwrap_or("unknown")
+            ),
             TransportEvent::TransportConnected {
                 peer_id,
                 address,
@@ -1032,4 +1205,3 @@ impl TransportEvent {
         }
     }
 }
-

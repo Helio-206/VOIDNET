@@ -83,11 +83,15 @@ pub fn is_room_topic(topic: &str) -> bool {
 }
 
 pub fn room_from_topic(topic: &str) -> Option<String> {
-    topic.strip_prefix(CHAT_ROOM_TOPIC_PREFIX).map(ToString::to_string)
+    topic
+        .strip_prefix(CHAT_ROOM_TOPIC_PREFIX)
+        .map(ToString::to_string)
 }
 
 pub fn direct_peer_from_topic(topic: &str) -> Option<String> {
-    topic.strip_prefix(CHAT_DIRECT_TOPIC_PREFIX).map(ToString::to_string)
+    topic
+        .strip_prefix(CHAT_DIRECT_TOPIC_PREFIX)
+        .map(ToString::to_string)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -372,7 +376,8 @@ impl SessionOffer {
             timestamp_unix_ms: unix_millis(),
             nonce: random_token(16),
         };
-        let signature = STANDARD_NO_PAD.encode(identity.sign_bytes(&serde_json::to_vec(&unsigned)?)?);
+        let signature =
+            STANDARD_NO_PAD.encode(identity.sign_bytes(&serde_json::to_vec(&unsigned)?)?);
         Ok(Self {
             protocol_version: unsigned.protocol_version,
             session_id: unsigned.session_id,
@@ -428,7 +433,8 @@ impl SessionAck {
             timestamp_unix_ms: unix_millis(),
             nonce: random_token(16),
         };
-        let signature = STANDARD_NO_PAD.encode(identity.sign_bytes(&serde_json::to_vec(&unsigned)?)?);
+        let signature =
+            STANDARD_NO_PAD.encode(identity.sign_bytes(&serde_json::to_vec(&unsigned)?)?);
         Ok(Self {
             protocol_version: unsigned.protocol_version,
             session_id: unsigned.session_id,
@@ -487,7 +493,8 @@ impl SignedEncryptedEnvelope {
             message_type: message_type.clone(),
             encrypted_payload: encrypted_payload.clone(),
         };
-        let signature = STANDARD_NO_PAD.encode(identity.sign_bytes(&serde_json::to_vec(&unsigned)?)?);
+        let signature =
+            STANDARD_NO_PAD.encode(identity.sign_bytes(&serde_json::to_vec(&unsigned)?)?);
         Ok(Self {
             protocol_version: unsigned.protocol_version,
             sender_peer_id: unsigned.sender_peer_id,
@@ -545,7 +552,8 @@ impl RoomMembershipEvent {
             timestamp_unix_ms: unix_millis(),
             nonce: random_token(16),
         };
-        let signature = STANDARD_NO_PAD.encode(identity.sign_bytes(&serde_json::to_vec(&unsigned)?)?);
+        let signature =
+            STANDARD_NO_PAD.encode(identity.sign_bytes(&serde_json::to_vec(&unsigned)?)?);
         Ok(Self {
             protocol_version: unsigned.protocol_version,
             room: unsigned.room,
@@ -589,11 +597,18 @@ impl RoomStateSnapshot {
             peer_id: identity.peer_id_string(),
             sender_public_key: identity.public_key_protobuf_base64(),
             members: snapshot.members.clone(),
-            recent_events: snapshot.event_history.iter().rev().take(12).cloned().collect(),
+            recent_events: snapshot
+                .event_history
+                .iter()
+                .rev()
+                .take(12)
+                .cloned()
+                .collect(),
             timestamp_unix_ms: unix_millis(),
             nonce: random_token(16),
         };
-        let signature = STANDARD_NO_PAD.encode(identity.sign_bytes(&serde_json::to_vec(&unsigned)?)?);
+        let signature =
+            STANDARD_NO_PAD.encode(identity.sign_bytes(&serde_json::to_vec(&unsigned)?)?);
         Ok(Self {
             protocol_version: unsigned.protocol_version,
             room: unsigned.room,
@@ -684,12 +699,17 @@ pub fn enqueue_local_command(
     };
     let commands_dir = chat_commands_dir(data_dir.as_ref());
     fs::create_dir_all(&commands_dir)?;
-    let path = commands_dir.join(format!("{}-{}.json", envelope.issued_at_unix_ms, envelope.command_id));
+    let path = commands_dir.join(format!(
+        "{}-{}.json",
+        envelope.issued_at_unix_ms, envelope.command_id
+    ));
     fs::write(&path, serde_json::to_vec_pretty(&envelope)?)?;
     Ok(path)
 }
 
-pub fn drain_local_commands(data_dir: impl AsRef<Path>) -> Result<Vec<QueuedChatCommand>, ChatError> {
+pub fn drain_local_commands(
+    data_dir: impl AsRef<Path>,
+) -> Result<Vec<QueuedChatCommand>, ChatError> {
     let commands_dir = chat_commands_dir(data_dir.as_ref());
     if !commands_dir.exists() {
         return Ok(Vec::new());
@@ -717,7 +737,10 @@ pub fn load_chat_inbox(data_dir: impl AsRef<Path>) -> Result<ChatInboxState, Cha
     load_json_or_default(chat_inbox_file(data_dir.as_ref()))
 }
 
-pub fn save_chat_inbox(data_dir: impl AsRef<Path>, inbox: &ChatInboxState) -> Result<(), ChatError> {
+pub fn save_chat_inbox(
+    data_dir: impl AsRef<Path>,
+    inbox: &ChatInboxState,
+) -> Result<(), ChatError> {
     save_json(chat_inbox_file(data_dir.as_ref()), inbox)
 }
 
@@ -725,7 +748,10 @@ pub fn load_chat_rooms(data_dir: impl AsRef<Path>) -> Result<ChatRoomsState, Cha
     load_json_or_default(chat_rooms_file(data_dir.as_ref()))
 }
 
-pub fn save_chat_rooms(data_dir: impl AsRef<Path>, rooms: &ChatRoomsState) -> Result<(), ChatError> {
+pub fn save_chat_rooms(
+    data_dir: impl AsRef<Path>,
+    rooms: &ChatRoomsState,
+) -> Result<(), ChatError> {
     save_json(chat_rooms_file(data_dir.as_ref()), rooms)
 }
 
@@ -740,7 +766,9 @@ pub fn save_chat_sessions(
     save_json(chat_sessions_file(data_dir.as_ref()), sessions)
 }
 
-pub fn load_chat_notifications(data_dir: impl AsRef<Path>) -> Result<ChatNotificationsState, ChatError> {
+pub fn load_chat_notifications(
+    data_dir: impl AsRef<Path>,
+) -> Result<ChatNotificationsState, ChatError> {
     load_json_or_default(chat_notifications_file(data_dir.as_ref()))
 }
 
@@ -751,16 +779,15 @@ pub fn save_chat_notifications(
     save_json(chat_notifications_file(data_dir.as_ref()), notifications)
 }
 
-pub fn upsert_room_member(
-    rooms: &mut ChatRoomsState,
-    room: &str,
-    peer_id: &str,
-    joined: bool,
-) {
+pub fn upsert_room_member(rooms: &mut ChatRoomsState, room: &str, peer_id: &str, joined: bool) {
     let now = unix_millis();
     let snapshot = ensure_room_snapshot_mut(rooms, room);
 
-    if let Some(member) = snapshot.members.iter_mut().find(|member| member.peer_id == peer_id) {
+    if let Some(member) = snapshot
+        .members
+        .iter_mut()
+        .find(|member| member.peer_id == peer_id)
+    {
         member.presence = if joined { "ONLINE" } else { "OFFLINE" }.to_string();
         member.last_seen_unix_ms = now;
     } else {
@@ -786,7 +813,11 @@ pub fn set_local_room_joined(rooms: &mut ChatRoomsState, room: &str, joined: boo
     if joined {
         rooms.current_room = Some(room.to_string());
     } else if rooms.current_room.as_deref() == Some(room) {
-        rooms.current_room = rooms.rooms.iter().find(|entry| entry.joined).map(|entry| entry.room.clone());
+        rooms.current_room = rooms
+            .rooms
+            .iter()
+            .find(|entry| entry.joined)
+            .map(|entry| entry.room.clone());
     }
     rooms.sync_revision = rooms.sync_revision.saturating_add(1);
 }
@@ -813,7 +844,9 @@ pub fn record_room_event(
         body,
         timestamp_unix_ms: now,
     });
-    snapshot.event_history.sort_by_key(|event| event.timestamp_unix_ms);
+    snapshot
+        .event_history
+        .sort_by_key(|event| event.timestamp_unix_ms);
     if snapshot.event_history.len() > ROOM_EVENT_HISTORY_LIMIT {
         let keep_from = snapshot.event_history.len() - ROOM_EVENT_HISTORY_LIMIT;
         snapshot.event_history.drain(0..keep_from);
@@ -858,7 +891,9 @@ pub fn merge_room_snapshot(rooms: &mut ChatRoomsState, remote: &ChatRoomSnapshot
     } else {
         snapshot.room_name.clone()
     };
-    snapshot.last_changed_unix_ms = snapshot.last_changed_unix_ms.max(remote.last_changed_unix_ms);
+    snapshot.last_changed_unix_ms = snapshot
+        .last_changed_unix_ms
+        .max(remote.last_changed_unix_ms);
     refresh_room_snapshot(snapshot);
     rooms.sync_revision = rooms.sync_revision.saturating_add(1);
 }
@@ -906,7 +941,9 @@ pub fn push_notification(
         created_at_unix_ms: unix_millis(),
         unread: true,
     });
-    notifications.notifications.sort_by_key(|entry| entry.created_at_unix_ms);
+    notifications
+        .notifications
+        .sort_by_key(|entry| entry.created_at_unix_ms);
     if notifications.notifications.len() > CHAT_NOTIFICATION_LIMIT {
         let keep_from = notifications.notifications.len() - CHAT_NOTIFICATION_LIMIT;
         notifications.notifications.drain(0..keep_from);
@@ -1081,7 +1118,10 @@ fn chat_notifications_file(data_dir: &Path) -> PathBuf {
     chat_dir(data_dir).join(CHAT_NOTIFICATIONS_FILE)
 }
 
-fn ensure_room_snapshot_mut<'a>(rooms: &'a mut ChatRoomsState, room: &str) -> &'a mut ChatRoomSnapshot {
+fn ensure_room_snapshot_mut<'a>(
+    rooms: &'a mut ChatRoomsState,
+    room: &str,
+) -> &'a mut ChatRoomSnapshot {
     if !rooms.rooms.iter().any(|entry| entry.room == room) {
         rooms.rooms.push(ChatRoomSnapshot {
             room: room.to_string(),
@@ -1121,8 +1161,12 @@ fn refresh_room_snapshot(snapshot: &mut ChatRoomSnapshot) {
         .iter()
         .filter(|member| member.presence == "ONLINE")
         .count();
-    snapshot.members.sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
-    snapshot.event_history.sort_by_key(|event| event.timestamp_unix_ms);
+    snapshot
+        .members
+        .sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
+    snapshot
+        .event_history
+        .sort_by_key(|event| event.timestamp_unix_ms);
     if snapshot.event_history.len() > ROOM_EVENT_HISTORY_LIMIT {
         let keep_from = snapshot.event_history.len() - ROOM_EVENT_HISTORY_LIMIT;
         snapshot.event_history.drain(0..keep_from);
@@ -1174,7 +1218,12 @@ mod tests {
 
         let secret_a = random_ephemeral_secret();
         let public_a = public_key_from_secret(&secret_a);
-        let offer = SessionOffer::new(&identity_a, identity_b.peer_id_string(), public_a.to_bytes()).unwrap();
+        let offer = SessionOffer::new(
+            &identity_a,
+            identity_b.peer_id_string(),
+            public_a.to_bytes(),
+        )
+        .unwrap();
         offer.verify().unwrap();
 
         let secret_b = random_ephemeral_secret();
@@ -1189,7 +1238,11 @@ mod tests {
         ack.verify().unwrap();
 
         let key_a = derive_session_key(secret_a, ack.peer_public_key().unwrap(), &offer.session_id);
-        let key_b = derive_session_key(secret_b, offer.peer_public_key().unwrap(), &offer.session_id);
+        let key_b = derive_session_key(
+            secret_b,
+            offer.peer_public_key().unwrap(),
+            &offer.session_id,
+        );
 
         assert_eq!(key_a, key_b);
     }
@@ -1208,7 +1261,9 @@ mod tests {
         let mut protector = ReplayProtector::new(Duration::from_secs(CHAT_REPLAY_WINDOW_SECS));
         let now = now_unix_ms();
 
-        protector.check_and_record("peer-a", "nonce-1", now).unwrap();
+        protector
+            .check_and_record("peer-a", "nonce-1", now)
+            .unwrap();
         assert!(matches!(
             protector.check_and_record("peer-a", "nonce-1", now),
             Err(ChatError::ReplayDetected)
@@ -1217,10 +1272,8 @@ mod tests {
 
     #[test]
     fn enqueues_local_command_into_cold_directory() {
-        let data_dir = std::env::temp_dir().join(format!(
-            "voidnet-chat-queue-{}",
-            std::process::id()
-        ));
+        let data_dir =
+            std::env::temp_dir().join(format!("voidnet-chat-queue-{}", std::process::id()));
         let path = enqueue_local_command(
             &data_dir,
             ChatLocalCommand::Join {
@@ -1264,11 +1317,21 @@ mod tests {
 
         merge_room_snapshot(&mut rooms, &remote);
 
-        let operators = rooms.rooms.iter().find(|room| room.room == "operators").unwrap();
+        let operators = rooms
+            .rooms
+            .iter()
+            .find(|room| room.room == "operators")
+            .unwrap();
         assert!(operators.joined);
         assert_eq!(operators.active_members, 2);
-        assert!(operators.event_history.iter().any(|event| event.event_id == local_event));
-        assert!(operators.event_history.iter().any(|event| event.event_id == "evt-remote"));
+        assert!(operators
+            .event_history
+            .iter()
+            .any(|event| event.event_id == local_event));
+        assert!(operators
+            .event_history
+            .iter()
+            .any(|event| event.event_id == "evt-remote"));
     }
 
     #[test]
@@ -1297,9 +1360,14 @@ mod tests {
 
         assert_eq!(unread_count(&inbox, Some("operators")), 1);
         assert_eq!(mark_inbox_read(&mut inbox, Some("operators")), 1);
-        assert_eq!(mark_notifications_read(&mut notifications, Some("operators")), 1);
+        assert_eq!(
+            mark_notifications_read(&mut notifications, Some("operators")),
+            1
+        );
         assert_eq!(unread_count(&inbox, Some("operators")), 0);
-        assert!(notifications.notifications.iter().all(|entry| !entry.unread));
+        assert!(notifications
+            .notifications
+            .iter()
+            .all(|entry| !entry.unread));
     }
 }
-

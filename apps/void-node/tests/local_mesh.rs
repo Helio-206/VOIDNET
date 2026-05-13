@@ -42,12 +42,16 @@ fn three_node_topology_forms_through_bootstrap() {
         .expect("listen address in log")
         .to_string();
 
-    let mut node_b =
-        spawn_node("voidnet-test-topology-b", &["--bootstrap", address.as_str()])
-            .expect("spawn node b");
-    let mut node_c =
-        spawn_node("voidnet-test-topology-c", &["--bootstrap", address.as_str()])
-            .expect("spawn node c");
+    let mut node_b = spawn_node(
+        "voidnet-test-topology-b",
+        &["--bootstrap", address.as_str()],
+    )
+    .expect("spawn node b");
+    let mut node_c = spawn_node(
+        "voidnet-test-topology-c",
+        &["--bootstrap", address.as_str()],
+    )
+    .expect("spawn node c");
 
     let b_connected = wait_for_log(&mut node_b, "TransportConnected", Duration::from_secs(20));
     let c_connected = wait_for_log(&mut node_c, "TransportConnected", Duration::from_secs(20));

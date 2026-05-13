@@ -6,8 +6,8 @@ use std::{
     io::{self, IsTerminal, Write},
     path::PathBuf,
     str::FromStr,
-    sync::Arc,
     sync::mpsc,
+    sync::Arc,
     thread,
     time::Duration,
 };
@@ -15,16 +15,16 @@ use void_chat::{
     enqueue_local_command, load_chat_inbox, load_chat_notifications, load_chat_rooms,
     load_chat_sessions, unread_count, ChatLocalCommand,
 };
-use void_dns::{
-    enqueue_dns_command, DnsCommand, PersistentVoidDns, VoidDnsResolver, VoidDomain,
-};
+use void_dns::{enqueue_dns_command, DnsCommand, PersistentVoidDns, VoidDnsResolver, VoidDomain};
 use void_identity::{default_node_dir, NodeIdentity, PersistentNodeIdentity};
 use void_protocol::VoidUri;
 use void_runtime::{
     ui::RuntimeActionRequest, GatewayTrustLevel, GatewayTrustState, RuntimeConfig, RuntimeShell,
     VoidRuntime,
 };
-use void_transport::{event::TransportEvent, network_channels, PeerTopology, RuntimeShellTopologyInfo};
+use void_transport::{
+    event::TransportEvent, network_channels, PeerTopology, RuntimeShellTopologyInfo,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "voidnet", about = "VOIDNET operator CLI")]
@@ -55,6 +55,10 @@ enum Command {
     Peers,
     Topology,
     Diagnostics,
+    Network {
+        #[command(subcommand)]
+        command: NetworkCommand,
+    },
     Runtime {
         #[command(subcommand)]
         command: RuntimeCliCommand,
@@ -72,6 +76,17 @@ enum Command {
         #[command(subcommand)]
         command: ChatCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum NetworkCommand {
+    Status,
+    Bootstrap,
+    Peers,
+    Reachability,
+    Relays,
+    Sessions,
+    Diagnostics,
 }
 
 #[derive(Debug, Subcommand)]
@@ -153,28 +168,14 @@ enum GatewayCommand {
 enum ChatCommand {
     Peers,
     Sessions,
-    Send {
-        peer_id: String,
-        message: String,
-    },
-    RoomSend {
-        room: String,
-        message: String,
-    },
+    Send { peer_id: String, message: String },
+    RoomSend { room: String, message: String },
     Inbox,
     Rooms,
-    Join {
-        room: String,
-    },
-    Leave {
-        room: String,
-    },
-    Switch {
-        room: String,
-    },
-    MarkRead {
-        room: Option<String>,
-    },
+    Join { room: String },
+    Leave { room: String },
+    Switch { room: String },
+    MarkRead { room: Option<String> },
 }
 
 pub fn main() -> Result<()> {
@@ -187,8 +188,10 @@ pub fn main() -> Result<()> {
         }
         Command::Identity { persistent } => {
             if persistent {
-                let identity = PersistentNodeIdentity::load_or_create_dir(&data_dir)
-                    .with_context(|| format!("failed to load identity in {}", data_dir.display()))?;
+                let identity =
+                    PersistentNodeIdentity::load_or_create_dir(&data_dir).with_context(|| {
+                        format!("failed to load identity in {}", data_dir.display())
+                    })?;
                 println!("peer_id={}", identity.peer_id_string());
                 println!("fingerprint={}", identity.fingerprint());
                 println!("identity={}", identity.path().display());
@@ -215,11 +218,24 @@ pub fn main() -> Result<()> {
         Command::Open { uri } => {
             let uri = parse_void_uri_input(&uri)?;
             let persistent_identity = PersistentNodeIdentity::load_or_create_dir(&data_dir)
-                .with_context(|| format!("failed to load persistent identity in {}", data_dir.display()))?;
-            let dns = Arc::new(PersistentVoidDns::load_or_create(&data_dir)
-                .with_context(|| format!("failed to load dns cache in {}", data_dir.display()))?);
+                .with_context(|| {
+                    format!(
+                        "failed to load persistent identity in {}",
+                        data_dir.display()
+                    )
+                })?;
+            let dns = Arc::new(
+                PersistentVoidDns::load_or_create(&data_dir).with_context(|| {
+                    format!("failed to load dns cache in {}", data_dir.display())
+                })?,
+            );
             let (network, _inbox) = network_channels(16);
-            let runtime = VoidRuntime::new(NodeIdentity::generate(), dns, network, RuntimeConfig::default());
+            let runtime = VoidRuntime::new(
+                NodeIdentity::generate(),
+                dns,
+                network,
+                RuntimeConfig::default(),
+            );
             let mut shell = RuntimeShell::load_or_create(&data_dir, runtime)?;
             shell.reconcile_registry_owner(&persistent_identity.peer_id_string())?;
             tokio::runtime::Builder::new_current_thread()
@@ -257,7 +273,13 @@ pub fn main() -> Result<()> {
             persist_runtime_shell_topology(&data_dir, shell.state())?;
 
             if io::stdin().is_terminal() {
-                interactive_surface_loop(&data_dir, &uri.to_string(), &mut shell, &mut rendered, &mut input_state)?;
+                interactive_surface_loop(
+                    &data_dir,
+                    &uri.to_string(),
+                    &mut shell,
+                    &mut rendered,
+                    &mut input_state,
+                )?;
             }
         }
         Command::Peers => {
@@ -278,13 +300,42 @@ pub fn main() -> Result<()> {
                 println!("{line}");
             }
         }
+        Command::Network { command } => {
+            let topology = load_topology(&data_dir)?;
+            match command {
+                NetworkCommand::Status => println!("{}", topology.render_network_status()),
+                NetworkCommand::Bootstrap => println!("{}", topology.render_network_bootstrap()),
+                NetworkCommand::Peers => println!("{}", topology.render_network_peers()),
+                NetworkCommand::Reachability => {
+                    println!("{}", topology.render_network_reachability())
+                }
+                NetworkCommand::Relays => println!("{}", topology.render_network_relays()),
+                NetworkCommand::Sessions => println!("{}", topology.render_network_sessions()),
+                NetworkCommand::Diagnostics => {
+                    println!("{}", topology.render_network_diagnostics())
+                }
+            }
+        }
         Command::Runtime { command } => {
             let persistent_identity = PersistentNodeIdentity::load_or_create_dir(&data_dir)
-                .with_context(|| format!("failed to load persistent identity in {}", data_dir.display()))?;
-            let dns = Arc::new(PersistentVoidDns::load_or_create(&data_dir)
-                .with_context(|| format!("failed to load dns cache in {}", data_dir.display()))?);
+                .with_context(|| {
+                    format!(
+                        "failed to load persistent identity in {}",
+                        data_dir.display()
+                    )
+                })?;
+            let dns = Arc::new(
+                PersistentVoidDns::load_or_create(&data_dir).with_context(|| {
+                    format!("failed to load dns cache in {}", data_dir.display())
+                })?,
+            );
             let (network, _inbox) = network_channels(16);
-            let runtime = VoidRuntime::new(NodeIdentity::generate(), dns.clone(), network, RuntimeConfig::default());
+            let runtime = VoidRuntime::new(
+                NodeIdentity::generate(),
+                dns.clone(),
+                network,
+                RuntimeConfig::default(),
+            );
             let mut shell = RuntimeShell::load_or_create(&data_dir, runtime)?;
             shell.reconcile_registry_owner(&persistent_identity.peer_id_string())?;
             tokio::runtime::Builder::new_current_thread()
@@ -338,7 +389,10 @@ pub fn main() -> Result<()> {
                     }) => {
                         shell.grant_permission(&surface_id, &peer_owner, &capability, true)?;
                         persist_runtime_shell_topology(&data_dir, shell.state())?;
-                        println!("permission=granted surface={} peer={} capability={}", surface_id, peer_owner, capability);
+                        println!(
+                            "permission=granted surface={} peer={} capability={}",
+                            surface_id, peer_owner, capability
+                        );
                     }
                     Some(RuntimePermissionAction::Deny {
                         surface_id,
@@ -347,7 +401,10 @@ pub fn main() -> Result<()> {
                     }) => {
                         shell.grant_permission(&surface_id, &peer_owner, &capability, false)?;
                         persist_runtime_shell_topology(&data_dir, shell.state())?;
-                        println!("permission=denied surface={} peer={} capability={}", surface_id, peer_owner, capability);
+                        println!(
+                            "permission=denied surface={} peer={} capability={}",
+                            surface_id, peer_owner, capability
+                        );
                     }
                     None => {
                         if shell.state().permissions.is_empty() {
@@ -434,7 +491,10 @@ pub fn main() -> Result<()> {
                             println!("target_peer_id={}", record.target_peer_id);
                             println!("runtime_surface={}", record.runtime_surface);
                             println!("capabilities={}", record.capabilities.join(","));
-                            println!("ttl_remaining_secs={}", record.ttl_remaining_secs(now_unix_ms()));
+                            println!(
+                                "ttl_remaining_secs={}",
+                                record.ttl_remaining_secs(now_unix_ms())
+                            );
                             println!("signature_state=verified");
                         }
                         None => {
@@ -509,12 +569,29 @@ pub fn main() -> Result<()> {
                         println!("target_peer_id={}", active.record.target_peer_id);
                         println!("runtime_surface={}", active.record.runtime_surface);
                         println!("capabilities={}", active.record.capabilities.join(","));
-                        println!("ttl_remaining_secs={}", inspection.ttl_remaining_secs.unwrap_or_default());
-                        println!("signature_state={}", if active.verified { "verified" } else { "unknown" });
+                        println!(
+                            "ttl_remaining_secs={}",
+                            inspection.ttl_remaining_secs.unwrap_or_default()
+                        );
+                        println!(
+                            "signature_state={}",
+                            if active.verified {
+                                "verified"
+                            } else {
+                                "unknown"
+                            }
+                        );
                     } else {
                         println!("active_record=none");
                     }
-                    println!("conflict_state={}", if inspection.conflicts.is_empty() { "clean" } else { "conflicted" });
+                    println!(
+                        "conflict_state={}",
+                        if inspection.conflicts.is_empty() {
+                            "clean"
+                        } else {
+                            "conflicted"
+                        }
+                    );
                     for conflict in inspection.conflicts {
                         println!(
                             "conflict active_owner={} conflicting_owner={} reason={}",
@@ -528,11 +605,24 @@ pub fn main() -> Result<()> {
         }
         Command::Gateway { command } => {
             let persistent_identity = PersistentNodeIdentity::load_or_create_dir(&data_dir)
-                .with_context(|| format!("failed to load persistent identity in {}", data_dir.display()))?;
-            let dns = Arc::new(PersistentVoidDns::load_or_create(&data_dir)
-                .with_context(|| format!("failed to load dns cache in {}", data_dir.display()))?);
+                .with_context(|| {
+                    format!(
+                        "failed to load persistent identity in {}",
+                        data_dir.display()
+                    )
+                })?;
+            let dns = Arc::new(
+                PersistentVoidDns::load_or_create(&data_dir).with_context(|| {
+                    format!("failed to load dns cache in {}", data_dir.display())
+                })?,
+            );
             let (network, _inbox) = network_channels(16);
-            let runtime = VoidRuntime::new(NodeIdentity::generate(), dns, network, RuntimeConfig::default());
+            let runtime = VoidRuntime::new(
+                NodeIdentity::generate(),
+                dns,
+                network,
+                RuntimeConfig::default(),
+            );
             let mut shell = RuntimeShell::load_or_create(&data_dir, runtime)?;
             shell.reconcile_registry_owner(&persistent_identity.peer_id_string())?;
             match command {
@@ -556,13 +646,22 @@ pub fn main() -> Result<()> {
                         .build()?
                         .block_on(shell.synchronize_registry_dns(&persistent_identity))?;
                     persist_runtime_shell_topology(&data_dir, shell.state())?;
-                    println!("[VOIDNET][GATEWAY] GatewayRegistered route={}", registration.domain);
+                    println!(
+                        "[VOIDNET][GATEWAY] GatewayRegistered route={}",
+                        registration.domain
+                    );
                     println!("gateway_id={}", registration.surface_id);
                     println!("owner_peer={}", registration.owner_peer_id);
                     println!("protocols={}", registration.supported_protocols.join(","));
                     println!("capabilities={}", registration.capabilities.join(","));
-                    println!("external_base={}", registration.external_route_base.as_deref().unwrap_or("-"));
-                    println!("trust_level={:?}", registration.trust_level.unwrap_or_default());
+                    println!(
+                        "external_base={}",
+                        registration.external_route_base.as_deref().unwrap_or("-")
+                    );
+                    println!(
+                        "trust_level={:?}",
+                        registration.trust_level.unwrap_or_default()
+                    );
                 }
                 GatewayCommand::List => {
                     let gateways = shell.gateway_registrations();
@@ -599,13 +698,43 @@ pub fn main() -> Result<()> {
                     println!("runtime_surface={}", registration.runtime_surface);
                     println!("protocols={}", registration.supported_protocols.join(","));
                     println!("capabilities={}", registration.capabilities.join(","));
-                    println!("external_base={}", registration.external_route_base.as_deref().unwrap_or("-"));
+                    println!(
+                        "external_base={}",
+                        registration.external_route_base.as_deref().unwrap_or("-")
+                    );
                     if let Some(trust) = trust {
                         println!("trust_level={:?}", trust.trust_level);
                         println!("trust_state={:?}", trust.trust_state);
-                        println!("runtime_restrictions={}", if trust.runtime_restrictions.is_empty() { "-".to_string() } else { trust.runtime_restrictions.join(",") });
-                        println!("last_warning={}", trust.last_warning.as_deref().unwrap_or("-"));
-                        println!("permission_history={}", if trust.permission_history.is_empty() { "empty".to_string() } else { trust.permission_history.iter().map(|entry| format!("{}:{}:{}", entry.capability, entry.allowed, entry.reason)).collect::<Vec<_>>().join("|") });
+                        println!(
+                            "runtime_restrictions={}",
+                            if trust.runtime_restrictions.is_empty() {
+                                "-".to_string()
+                            } else {
+                                trust.runtime_restrictions.join(",")
+                            }
+                        );
+                        println!(
+                            "last_warning={}",
+                            trust.last_warning.as_deref().unwrap_or("-")
+                        );
+                        println!(
+                            "permission_history={}",
+                            if trust.permission_history.is_empty() {
+                                "empty".to_string()
+                            } else {
+                                trust
+                                    .permission_history
+                                    .iter()
+                                    .map(|entry| {
+                                        format!(
+                                            "{}:{}:{}",
+                                            entry.capability, entry.allowed, entry.reason
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("|")
+                            }
+                        );
                     }
                 }
                 GatewayCommand::Allow { domain, capability } => {
@@ -614,9 +743,24 @@ pub fn main() -> Result<()> {
                         .into_iter()
                         .find(|gateway| gateway.domain == domain)
                         .with_context(|| format!("gateway not registered: {domain}"))?;
-                    shell.grant_permission(&registration.surface_id, &registration.owner_peer_id, &capability, true)?;
-                    shell.record_gateway_permission_decision(&domain, &capability, true, "cli allow")?;
-                    shell.set_gateway_trust(&domain, GatewayTrustState::Trusted, GatewayTrustLevel::Trusted, "gateway capability allowed")?;
+                    shell.grant_permission(
+                        &registration.surface_id,
+                        &registration.owner_peer_id,
+                        &capability,
+                        true,
+                    )?;
+                    shell.record_gateway_permission_decision(
+                        &domain,
+                        &capability,
+                        true,
+                        "cli allow",
+                    )?;
+                    shell.set_gateway_trust(
+                        &domain,
+                        GatewayTrustState::Trusted,
+                        GatewayTrustLevel::Trusted,
+                        "gateway capability allowed",
+                    )?;
                     persist_runtime_shell_topology(&data_dir, shell.state())?;
                     println!("[VOIDNET][GATEWAY] PermissionGranted capability={capability} domain={domain}");
                 }
@@ -626,83 +770,99 @@ pub fn main() -> Result<()> {
                         .into_iter()
                         .find(|gateway| gateway.domain == domain)
                         .with_context(|| format!("gateway not registered: {domain}"))?;
-                    shell.grant_permission(&registration.surface_id, &registration.owner_peer_id, &capability, false)?;
-                    shell.record_gateway_permission_decision(&domain, &capability, false, "cli deny")?;
-                    shell.set_gateway_trust(&domain, GatewayTrustState::Denied, GatewayTrustLevel::Untrusted, "gateway capability denied")?;
+                    shell.grant_permission(
+                        &registration.surface_id,
+                        &registration.owner_peer_id,
+                        &capability,
+                        false,
+                    )?;
+                    shell.record_gateway_permission_decision(
+                        &domain,
+                        &capability,
+                        false,
+                        "cli deny",
+                    )?;
+                    shell.set_gateway_trust(
+                        &domain,
+                        GatewayTrustState::Denied,
+                        GatewayTrustLevel::Untrusted,
+                        "gateway capability denied",
+                    )?;
                     persist_runtime_shell_topology(&data_dir, shell.state())?;
                     println!("[VOIDNET][GATEWAY] PermissionDenied capability={capability} domain={domain}");
                 }
             }
         }
-        Command::Chat { command } => match command {
-            ChatCommand::Peers => {
-                let topology = load_topology(&data_dir)?;
-                println!("{}", topology.render_table());
-            }
-            ChatCommand::Sessions => {
-                let sessions = load_chat_sessions(&data_dir)?;
-                if sessions.sessions.is_empty() {
-                    println!("no chat sessions observed");
-                } else {
-                    println!("PEER ID                                            SESSION ID           STATE         LAST ACTIVITY   TRANSPORT         LAST ERROR");
-                    for session in sessions.sessions {
-                        println!(
-                            "{:<50} {:<20} {:<13} {:<15} {:<17} {}",
-                            session.peer_id,
-                            session.session_id,
-                            session.encryption_state,
-                            session.last_activity_unix_ms,
-                            session.transport_state,
-                            session.last_error.as_deref().unwrap_or("-"),
-                        );
+        Command::Chat { command } => {
+            match command {
+                ChatCommand::Peers => {
+                    let topology = load_topology(&data_dir)?;
+                    println!("{}", topology.render_table());
+                }
+                ChatCommand::Sessions => {
+                    let sessions = load_chat_sessions(&data_dir)?;
+                    if sessions.sessions.is_empty() {
+                        println!("no chat sessions observed");
+                    } else {
+                        println!("PEER ID                                            SESSION ID           STATE         LAST ACTIVITY   TRANSPORT         LAST ERROR");
+                        for session in sessions.sessions {
+                            println!(
+                                "{:<50} {:<20} {:<13} {:<15} {:<17} {}",
+                                session.peer_id,
+                                session.session_id,
+                                session.encryption_state,
+                                session.last_activity_unix_ms,
+                                session.transport_state,
+                                session.last_error.as_deref().unwrap_or("-"),
+                            );
+                        }
                     }
                 }
-            }
-            ChatCommand::Send { peer_id, message } => {
-                let path = enqueue_local_command(
-                    &data_dir,
-                    ChatLocalCommand::SendDirect { peer_id, message },
-                )?;
-                println!("queued={}", path.display());
-            }
-            ChatCommand::RoomSend { room, message } => {
-                let path = enqueue_local_command(
-                    &data_dir,
-                    ChatLocalCommand::SendRoom { room, message },
-                )?;
-                println!("queued={}", path.display());
-            }
-            ChatCommand::Inbox => {
-                let inbox = load_chat_inbox(&data_dir)?;
-                if inbox.messages.is_empty() {
-                    println!("inbox empty");
-                } else {
-                    for message in inbox.messages {
-                        println!(
-                            "from={} room={} session={} at={} unread={} body={}",
-                            message.from_peer_id,
-                            message.room.as_deref().unwrap_or("direct"),
-                            message.session_id,
-                            message.received_at_unix_ms,
-                            if message.unread { "yes" } else { "no" },
-                            message.body,
-                        );
+                ChatCommand::Send { peer_id, message } => {
+                    let path = enqueue_local_command(
+                        &data_dir,
+                        ChatLocalCommand::SendDirect { peer_id, message },
+                    )?;
+                    println!("queued={}", path.display());
+                }
+                ChatCommand::RoomSend { room, message } => {
+                    let path = enqueue_local_command(
+                        &data_dir,
+                        ChatLocalCommand::SendRoom { room, message },
+                    )?;
+                    println!("queued={}", path.display());
+                }
+                ChatCommand::Inbox => {
+                    let inbox = load_chat_inbox(&data_dir)?;
+                    if inbox.messages.is_empty() {
+                        println!("inbox empty");
+                    } else {
+                        for message in inbox.messages {
+                            println!(
+                                "from={} room={} session={} at={} unread={} body={}",
+                                message.from_peer_id,
+                                message.room.as_deref().unwrap_or("direct"),
+                                message.session_id,
+                                message.received_at_unix_ms,
+                                if message.unread { "yes" } else { "no" },
+                                message.body,
+                            );
+                        }
                     }
                 }
-            }
-            ChatCommand::Rooms => {
-                let rooms = load_chat_rooms(&data_dir)?;
-                if rooms.rooms.is_empty() {
-                    println!("no rooms observed");
-                } else {
-                    for room in rooms.rooms {
-                        let members = room
-                            .members
-                            .iter()
-                            .map(|member| format!("{}:{}", member.peer_id, member.presence))
-                            .collect::<Vec<_>>()
-                            .join(",");
-                        println!(
+                ChatCommand::Rooms => {
+                    let rooms = load_chat_rooms(&data_dir)?;
+                    if rooms.rooms.is_empty() {
+                        println!("no rooms observed");
+                    } else {
+                        for room in rooms.rooms {
+                            let members = room
+                                .members
+                                .iter()
+                                .map(|member| format!("{}:{}", member.peer_id, member.presence))
+                                .collect::<Vec<_>>()
+                                .join(",");
+                            println!(
                             "room={} current={} joined={} active_members={} members={} events={}",
                             room.room,
                             if rooms.current_room.as_deref() == Some(room.room.as_str()) { "yes" } else { "no" },
@@ -711,26 +871,29 @@ pub fn main() -> Result<()> {
                             if members.is_empty() { "-" } else { members.as_str() },
                             room.event_history.len(),
                         );
+                        }
                     }
                 }
+                ChatCommand::Join { room } => {
+                    let path = enqueue_local_command(&data_dir, ChatLocalCommand::Join { room })?;
+                    println!("queued={}", path.display());
+                }
+                ChatCommand::Leave { room } => {
+                    let path = enqueue_local_command(&data_dir, ChatLocalCommand::Leave { room })?;
+                    println!("queued={}", path.display());
+                }
+                ChatCommand::Switch { room } => {
+                    let path =
+                        enqueue_local_command(&data_dir, ChatLocalCommand::SwitchRoom { room })?;
+                    println!("queued={}", path.display());
+                }
+                ChatCommand::MarkRead { room } => {
+                    let path =
+                        enqueue_local_command(&data_dir, ChatLocalCommand::MarkRead { room })?;
+                    println!("queued={}", path.display());
+                }
             }
-            ChatCommand::Join { room } => {
-                let path = enqueue_local_command(&data_dir, ChatLocalCommand::Join { room })?;
-                println!("queued={}", path.display());
-            }
-            ChatCommand::Leave { room } => {
-                let path = enqueue_local_command(&data_dir, ChatLocalCommand::Leave { room })?;
-                println!("queued={}", path.display());
-            }
-            ChatCommand::Switch { room } => {
-                let path = enqueue_local_command(&data_dir, ChatLocalCommand::SwitchRoom { room })?;
-                println!("queued={}", path.display());
-            }
-            ChatCommand::MarkRead { room } => {
-                let path = enqueue_local_command(&data_dir, ChatLocalCommand::MarkRead { room })?;
-                println!("queued={}", path.display());
-            }
-        },
+        }
     }
 
     Ok(())
@@ -764,7 +927,11 @@ pub(crate) fn persist_runtime_shell_topology(
         .iter()
         .map(|mount| mount.mount_latency_ms)
         .max();
-    let active_permissions = state.permissions.iter().filter(|grant| grant.allowed).count();
+    let active_permissions = state
+        .permissions
+        .iter()
+        .filter(|grant| grant.allowed)
+        .count();
     let failed_mounts = state
         .mounts
         .iter()
@@ -846,20 +1013,25 @@ pub(crate) fn persist_runtime_shell_topology(
         .gateway_routes
         .iter()
         .max_by_key(|route| route.updated_unix_ms);
-    let gateway_last_external_target = latest_gateway_route
-        .map(|route| route.bridge.external_target.clone());
-    let gateway_last_bridge_state = latest_gateway_route
-        .map(|route| format!("{:?}", route.bridge.lifecycle_state));
-    let gateway_last_cache_state = latest_gateway_route
-        .and_then(|route| route.bridge.cache_state.clone());
-    let gateway_last_fetch_latency_ms = latest_gateway_route
-        .and_then(|route| route.bridge.fetch_latency_ms);
-    let gateway_last_response_size = latest_gateway_route
-        .and_then(|route| route.bridge.response_size);
+    let gateway_last_external_target =
+        latest_gateway_route.map(|route| route.bridge.external_target.clone());
+    let gateway_last_bridge_state =
+        latest_gateway_route.map(|route| format!("{:?}", route.bridge.lifecycle_state));
+    let gateway_last_cache_state =
+        latest_gateway_route.and_then(|route| route.bridge.cache_state.clone());
+    let gateway_last_fetch_latency_ms =
+        latest_gateway_route.and_then(|route| route.bridge.fetch_latency_ms);
+    let gateway_last_response_size =
+        latest_gateway_route.and_then(|route| route.bridge.response_size);
     let active_sessions = state
         .sessions
         .iter()
-        .filter(|session| matches!(session.session_state, void_runtime::RuntimeSessionState::Active))
+        .filter(|session| {
+            matches!(
+                session.session_state,
+                void_runtime::RuntimeSessionState::Active
+            )
+        })
         .count();
     topology.set_runtime_shell_state(RuntimeShellTopologyInfo::new(
         state.mounts.len(),
@@ -1013,7 +1185,12 @@ fn interactive_surface_loop(
                     continue;
                 }
             };
-            let Some(action) = rendered.actions.iter().find(|action| action.index == index).cloned() else {
+            let Some(action) = rendered
+                .actions
+                .iter()
+                .find(|action| action.index == index)
+                .cloned()
+            else {
                 println!("unknown button index {index}");
                 continue;
             };
@@ -1129,7 +1306,11 @@ pub(crate) fn render_chat_diagnostics(data_dir: &PathBuf) -> Result<Vec<String>>
     let last_room_event = rooms
         .rooms
         .iter()
-        .flat_map(|room| room.event_history.iter().map(move |event| (room.room.as_str(), event)))
+        .flat_map(|room| {
+            room.event_history
+                .iter()
+                .map(move |event| (room.room.as_str(), event))
+        })
         .max_by_key(|(_, event)| event.timestamp_unix_ms)
         .map(|(room, event)| format!("{}:{}:{}", room, event.event_type, event.peer_id))
         .unwrap_or_else(|| "-".to_string());
@@ -1139,11 +1320,18 @@ pub(crate) fn render_chat_diagnostics(data_dir: &PathBuf) -> Result<Vec<String>>
         format!("chat_unread_messages={}", unread_count(&inbox, None)),
         format!(
             "chat_unread_notifications={}",
-            notifications.notifications.iter().filter(|entry| entry.unread).count()
+            notifications
+                .notifications
+                .iter()
+                .filter(|entry| entry.unread)
+                .count()
         ),
         format!("chat_rooms={}", rooms.rooms.len()),
         format!("chat_joined_rooms={joined_rooms}"),
-        format!("chat_current_room={}", rooms.current_room.as_deref().unwrap_or("-")),
+        format!(
+            "chat_current_room={}",
+            rooms.current_room.as_deref().unwrap_or("-")
+        ),
         format!("chat_room_sync_revision={}", rooms.sync_revision),
         format!("chat_room_active_members={active_members}"),
         format!("chat_sessions={}", sessions.sessions.len()),
@@ -1157,7 +1345,8 @@ pub(crate) fn render_gateway_diagnostics(data_dir: &PathBuf) -> Result<Vec<Strin
         return Ok(Vec::new());
     }
 
-    let state: void_runtime::RuntimeShellState = serde_json::from_slice(&std::fs::read(&shell_state_path)?)?;
+    let state: void_runtime::RuntimeShellState =
+        serde_json::from_slice(&std::fs::read(&shell_state_path)?)?;
     let gateway_registrations = state
         .registry
         .iter()
@@ -1168,8 +1357,16 @@ pub(crate) fn render_gateway_diagnostics(data_dir: &PathBuf) -> Result<Vec<Strin
         .iter()
         .filter(|mount| mount.surface_kind == void_runtime::RuntimeSurfaceKind::Gateway)
         .count();
-    let active_routes = state.gateway_routes.iter().filter(|route| route.active).count();
-    let bridge_failures = state.gateway_routes.iter().filter(|route| route.last_error.is_some()).count();
+    let active_routes = state
+        .gateway_routes
+        .iter()
+        .filter(|route| route.active)
+        .count();
+    let bridge_failures = state
+        .gateway_routes
+        .iter()
+        .filter(|route| route.last_error.is_some())
+        .count();
     let bridge_sessions = state.gateway_bridge_sessions.len();
     let snapshot_entries = count_gateway_snapshot_entries(data_dir)?;
     let trust_warnings = state
@@ -1250,7 +1447,11 @@ fn count_gateway_snapshot_entries(data_dir: &PathBuf) -> Result<usize> {
             let entry_path = entry.path();
             if entry_path.is_dir() {
                 count += count_dir(&entry_path)?;
-            } else if entry_path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+            } else if entry_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("json")
+            {
                 count += 1;
             }
         }

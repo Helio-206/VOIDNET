@@ -17,7 +17,10 @@ pub enum VoidUiNode {
     List(Vec<VoidUiNode>),
     Item(Vec<VoidUiNode>),
     Text(String),
-    Button { label: String, action: VoidUri },
+    Button {
+        label: String,
+        action: VoidUri,
+    },
     Input {
         id: String,
         placeholder: Option<String>,
@@ -357,4 +360,3 @@ mod tests {
         assert_eq!(page.children.len(), 1);
     }
 }
-

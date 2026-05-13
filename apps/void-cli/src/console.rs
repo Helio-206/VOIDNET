@@ -15,8 +15,7 @@ use ratatui::{
 };
 use std::{
     collections::VecDeque,
-    fs,
-    io,
+    fs, io,
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
     sync::Arc,
@@ -95,7 +94,10 @@ impl Drop for TerminalSession {
     }
 }
 
-fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut ConsoleApp) -> Result<()> {
+fn run_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ConsoleApp,
+) -> Result<()> {
     let mut last_tick = Instant::now();
 
     loop {
@@ -104,7 +106,9 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut Con
         let timeout = TICK_RATE.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)? {
             match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key.code, key.modifiers),
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    app.handle_key(key.code, key.modifiers)
+                }
                 Event::Resize(_, _) => app.clear_status_if_transient(),
                 _ => {}
             }
@@ -205,18 +209,27 @@ impl ConsoleApp {
                 Ok(()) => self.set_status("runtime snapshot refreshed", false),
                 Err(error) => self.report_error(format!("refresh failed: {error}")),
             },
-            KeyCode::Up if self.tab == 4 => self.event_scroll = (self.event_scroll + 1).min(self.max_event_scroll()),
-            KeyCode::Down if self.tab == 4 => self.event_scroll = self.event_scroll.saturating_sub(1),
+            KeyCode::Up if self.tab == 4 => {
+                self.event_scroll = (self.event_scroll + 1).min(self.max_event_scroll())
+            }
+            KeyCode::Down if self.tab == 4 => {
+                self.event_scroll = self.event_scroll.saturating_sub(1)
+            }
             KeyCode::PageUp if self.tab == 4 => {
-                self.event_scroll = (self.event_scroll + EVENT_PAGE_STEP).min(self.max_event_scroll())
+                self.event_scroll =
+                    (self.event_scroll + EVENT_PAGE_STEP).min(self.max_event_scroll())
             }
             KeyCode::PageDown if self.tab == 4 => {
                 self.event_scroll = self.event_scroll.saturating_sub(EVENT_PAGE_STEP)
             }
             KeyCode::Home if self.tab == 4 => self.event_scroll = self.max_event_scroll(),
             KeyCode::End if self.tab == 4 => self.event_scroll = 0,
-            KeyCode::Char('k') if self.tab == 4 => self.event_scroll = (self.event_scroll + 1).min(self.max_event_scroll()),
-            KeyCode::Char('j') if self.tab == 4 => self.event_scroll = self.event_scroll.saturating_sub(1),
+            KeyCode::Char('k') if self.tab == 4 => {
+                self.event_scroll = (self.event_scroll + 1).min(self.max_event_scroll())
+            }
+            KeyCode::Char('j') if self.tab == 4 => {
+                self.event_scroll = self.event_scroll.saturating_sub(1)
+            }
             _ => {}
         }
     }
@@ -285,26 +298,41 @@ impl ConsoleApp {
                 self.set_status(status, false);
             }
             PaletteCommand::Join { room } => {
-                enqueue_local_command(&self.data_dir, ChatLocalCommand::Join { room: room.clone() })?;
+                enqueue_local_command(
+                    &self.data_dir,
+                    ChatLocalCommand::Join { room: room.clone() },
+                )?;
                 let status = format!("join queued for {}", room);
                 self.push_event(ConsoleEvent::chat(status.clone()));
                 self.set_status(status, false);
             }
             PaletteCommand::Leave { room } => {
-                enqueue_local_command(&self.data_dir, ChatLocalCommand::Leave { room: room.clone() })?;
+                enqueue_local_command(
+                    &self.data_dir,
+                    ChatLocalCommand::Leave { room: room.clone() },
+                )?;
                 let status = format!("leave queued for {}", room);
                 self.push_event(ConsoleEvent::chat(status.clone()));
                 self.set_status(status, false);
             }
             PaletteCommand::Switch { room } => {
-                enqueue_local_command(&self.data_dir, ChatLocalCommand::SwitchRoom { room: room.clone() })?;
+                enqueue_local_command(
+                    &self.data_dir,
+                    ChatLocalCommand::SwitchRoom { room: room.clone() },
+                )?;
                 let status = format!("switch queued to {}", room);
                 self.push_event(ConsoleEvent::chat(status.clone()));
                 self.set_status(status, false);
             }
             PaletteCommand::MarkRead { room } => {
-                enqueue_local_command(&self.data_dir, ChatLocalCommand::MarkRead { room: room.clone() })?;
-                let status = format!("mark-read queued for {}", room.as_deref().unwrap_or("all rooms"));
+                enqueue_local_command(
+                    &self.data_dir,
+                    ChatLocalCommand::MarkRead { room: room.clone() },
+                )?;
+                let status = format!(
+                    "mark-read queued for {}",
+                    room.as_deref().unwrap_or("all rooms")
+                );
                 self.push_event(ConsoleEvent::chat(status.clone()));
                 self.set_status(status, false);
             }
@@ -334,7 +362,10 @@ impl ConsoleApp {
             }
             PaletteCommand::InspectPeer { peer_id } => {
                 self.tab = 2;
-                let status = format!("topology focus moved to {}", shorten_peer_id(peer_id.trim()));
+                let status = format!(
+                    "topology focus moved to {}",
+                    shorten_peer_id(peer_id.trim())
+                );
                 self.push_event(ConsoleEvent::topology(status.clone()));
                 self.set_status(status, false);
             }
@@ -450,7 +481,9 @@ impl ConsoleApp {
         if self.status_is_error {
             return;
         }
-        if self.status.starts_with("palette closed") || self.status.starts_with("topology focus moved") {
+        if self.status.starts_with("palette closed")
+            || self.status.starts_with("topology focus moved")
+        {
             self.status = "Tab/Shift+Tab switch views · : palette · Ctrl+C or q exits".to_string();
         }
     }
@@ -506,7 +539,10 @@ impl ConsoleSnapshot {
             .take(20)
             .map(|message| InboxRow {
                 from: message.from_peer_id,
-                room: message.room.or(message.room_name).unwrap_or_else(|| "direct".to_string()),
+                room: message
+                    .room
+                    .or(message.room_name)
+                    .unwrap_or_else(|| "direct".to_string()),
                 body: message.body,
                 unread: message.unread,
                 received_at_unix_ms: message.received_at_unix_ms,
@@ -540,7 +576,9 @@ impl ConsoleSnapshot {
                     .members
                     .iter()
                     .take(8)
-                    .map(|member| format!("{} {}", shorten_peer_id(&member.peer_id), member.presence))
+                    .map(|member| {
+                        format!("{} {}", shorten_peer_id(&member.peer_id), member.presence)
+                    })
                     .collect::<Vec<_>>(),
                 recent_events: room
                     .event_history
@@ -553,7 +591,10 @@ impl ConsoleSnapshot {
                             "{} {} {}",
                             clock_string(event.timestamp_unix_ms),
                             event.event_type,
-                            truncate_with_ellipsis(&format!("{} {body}", shorten_peer_id(&event.peer_id)), 38)
+                            truncate_with_ellipsis(
+                                &format!("{} {body}", shorten_peer_id(&event.peer_id)),
+                                38
+                            )
                         )
                     })
                     .collect::<Vec<_>>(),
@@ -586,7 +627,10 @@ impl ConsoleSnapshot {
             .rev()
             .take(6)
             .map(|entry| {
-                let scope = entry.room.or(entry.peer_id).unwrap_or_else(|| "runtime".to_string());
+                let scope = entry
+                    .room
+                    .or(entry.peer_id)
+                    .unwrap_or_else(|| "runtime".to_string());
                 format!("{} {}", scope, truncate_with_ellipsis(&entry.message, 34))
             })
             .collect::<Vec<_>>();
@@ -630,12 +674,25 @@ impl ConsoleSnapshot {
                 .topology
                 .peers
                 .values()
-                .filter(|peer| matches!(peer.state, PeerConnectionState::Active | PeerConnectionState::Syncing))
+                .filter(|peer| {
+                    matches!(
+                        peer.state,
+                        PeerConnectionState::Active | PeerConnectionState::Syncing
+                    )
+                })
                 .count(),
-            mounted_surfaces: runtime.map(|state| state.mounted_surfaces).unwrap_or_default(),
-            active_sessions: runtime.map(|state| state.active_sessions).unwrap_or_default(),
-            gateway_routes: runtime.map(|state| state.gateway_active_routes).unwrap_or_default(),
-            bridge_sessions: runtime.map(|state| state.gateway_bridge_sessions).unwrap_or_default(),
+            mounted_surfaces: runtime
+                .map(|state| state.mounted_surfaces)
+                .unwrap_or_default(),
+            active_sessions: runtime
+                .map(|state| state.active_sessions)
+                .unwrap_or_default(),
+            gateway_routes: runtime
+                .map(|state| state.gateway_active_routes)
+                .unwrap_or_default(),
+            bridge_sessions: runtime
+                .map(|state| state.gateway_bridge_sessions)
+                .unwrap_or_default(),
             current_room: self.current_room.clone(),
             current_mount_route: self.current_mount_route.clone(),
             unread_messages: self.unread_messages,
@@ -779,7 +836,10 @@ enum PaletteCommand {
     InspectGateway { domain: String },
 }
 
-fn parse_palette_command(input: &str, current_room: Option<&str>) -> std::result::Result<PaletteCommand, String> {
+fn parse_palette_command(
+    input: &str,
+    current_room: Option<&str>,
+) -> std::result::Result<PaletteCommand, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err(command_usage());
@@ -829,19 +889,26 @@ fn parse_palette_command(input: &str, current_room: Option<&str>) -> std::result
     }
 
     if let Some(room) = trimmed.strip_prefix("join ") {
-        return parse_single_value(room, "usage: join <room>").map(|room| PaletteCommand::Join { room });
+        return parse_single_value(room, "usage: join <room>")
+            .map(|room| PaletteCommand::Join { room });
     }
     if let Some(room) = trimmed.strip_prefix("leave ") {
-        return parse_single_value(room, "usage: leave <room>").map(|room| PaletteCommand::Leave { room });
+        return parse_single_value(room, "usage: leave <room>")
+            .map(|room| PaletteCommand::Leave { room });
     }
     if let Some(room) = trimmed.strip_prefix("switch ") {
-        return parse_single_value(room, "usage: switch <room>").map(|room| PaletteCommand::Switch { room });
+        return parse_single_value(room, "usage: switch <room>")
+            .map(|room| PaletteCommand::Switch { room });
     }
 
     if let Some(room) = trimmed.strip_prefix("mark-read") {
         let room = room.trim();
         return Ok(PaletteCommand::MarkRead {
-            room: if room.is_empty() { None } else { Some(room.to_string()) },
+            room: if room.is_empty() {
+                None
+            } else {
+                Some(room.to_string())
+            },
         });
     }
 
@@ -888,7 +955,10 @@ fn parse_peer_message(input: &str, usage: &str) -> std::result::Result<(String, 
     Ok((peer_id.to_string(), message.to_string()))
 }
 
-fn parse_room_send(input: &str, current_room: Option<&str>) -> std::result::Result<PaletteCommand, String> {
+fn parse_room_send(
+    input: &str,
+    current_room: Option<&str>,
+) -> std::result::Result<PaletteCommand, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err("usage: room-send <message> or room-send @<room> <message>".to_string());
@@ -965,7 +1035,10 @@ fn draw_compact_console(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
     let runtime = app.snapshot.runtime_info();
     let lines = vec![
         Line::from(Span::styled("VOID CONSOLE", title_style())),
-        Line::from(Span::styled("terminal too small for full dashboard", subtle_style())),
+        Line::from(Span::styled(
+            "terminal too small for full dashboard",
+            subtle_style(),
+        )),
         Line::from(Span::styled(
             format!("node {}", shorten_peer_id(&app.snapshot.node_id)),
             value_style(),
@@ -989,7 +1062,9 @@ fn draw_compact_console(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
         Line::from(Span::styled(
             format!(
                 "sessions {} · unread {}",
-                runtime.map(|state| state.active_sessions).unwrap_or_default(),
+                runtime
+                    .map(|state| state.active_sessions)
+                    .unwrap_or_default(),
                 app.snapshot.unread_messages
             ),
             subtle_style(),
@@ -1005,7 +1080,10 @@ fn draw_compact_console(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
                 subtle_style()
             },
         )),
-        Line::from(Span::styled("resize terminal or use q / Ctrl+C to exit", subtle_style())),
+        Line::from(Span::styled(
+            "resize terminal or use q / Ctrl+C to exit",
+            subtle_style(),
+        )),
     ];
 
     frame.render_widget(
@@ -1037,7 +1115,10 @@ fn draw_header(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
         ),
         Span::raw("  "),
         Span::styled(
-            format!("sessions {}", runtime.map(|info| info.active_sessions).unwrap_or_default()),
+            format!(
+                "sessions {}",
+                runtime.map(|info| info.active_sessions).unwrap_or_default()
+            ),
             Style::default().fg(Color::LightGreen),
         ),
         Span::raw("  "),
@@ -1050,7 +1131,10 @@ fn draw_header(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
         Span::styled(
             format!(
                 "route {}",
-                truncate_with_ellipsis(app.snapshot.current_mount_route.as_deref().unwrap_or("-"), 18)
+                truncate_with_ellipsis(
+                    app.snapshot.current_mount_route.as_deref().unwrap_or("-"),
+                    18
+                )
             ),
             subtle_style(),
         ),
@@ -1095,7 +1179,11 @@ fn draw_tabs(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
                 .bg(Color::LightMagenta)
                 .add_modifier(Modifier::BOLD),
         )
-        .block(Block::default().borders(Borders::ALL).border_style(border_style()));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style()),
+        );
     frame.render_widget(tabs, area);
 }
 
@@ -1128,14 +1216,21 @@ fn draw_dashboard(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
             value_style(),
         )),
         Line::from(Span::styled(
-            format!("active peers {}", count_active_peers(&app.snapshot.topology)),
+            format!(
+                "active peers {}",
+                count_active_peers(&app.snapshot.topology)
+            ),
             subtle_style(),
         )),
         Line::from(Span::styled(
             format!(
                 "gateways {} · bridge sessions {}",
-                runtime.map(|state| state.gateway_registrations).unwrap_or_default(),
-                runtime.map(|state| state.gateway_bridge_sessions).unwrap_or_default(),
+                runtime
+                    .map(|state| state.gateway_registrations)
+                    .unwrap_or_default(),
+                runtime
+                    .map(|state| state.gateway_bridge_sessions)
+                    .unwrap_or_default(),
             ),
             subtle_style(),
         )),
@@ -1145,36 +1240,60 @@ fn draw_dashboard(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
         Line::from(Span::styled(
             format!(
                 "mounted {} · active {}",
-                runtime.map(|state| state.mounted_surfaces).unwrap_or_default(),
-                runtime.map(|state| state.active_sessions).unwrap_or_default(),
+                runtime
+                    .map(|state| state.mounted_surfaces)
+                    .unwrap_or_default(),
+                runtime
+                    .map(|state| state.active_sessions)
+                    .unwrap_or_default(),
             ),
             value_style(),
         )),
         Line::from(Span::styled(
             format!(
                 "permissions {} · routes {}",
-                runtime.map(|state| state.active_permissions).unwrap_or_default(),
-                runtime.map(|state| state.gateway_active_routes).unwrap_or_default(),
+                runtime
+                    .map(|state| state.active_permissions)
+                    .unwrap_or_default(),
+                runtime
+                    .map(|state| state.gateway_active_routes)
+                    .unwrap_or_default(),
             ),
             subtle_style(),
         )),
         Line::from(Span::styled(
-            format!("route {}", app.snapshot.current_mount_route.as_deref().unwrap_or("-")),
+            format!(
+                "route {}",
+                app.snapshot.current_mount_route.as_deref().unwrap_or("-")
+            ),
             subtle_style(),
         )),
     ];
-    frame.render_widget(Paragraph::new(network_lines).block(panel_block("TOPOLOGY STATE")), top[0]);
-    frame.render_widget(Paragraph::new(runtime_lines).block(panel_block("RUNTIME STATE")), top[1]);
+    frame.render_widget(
+        Paragraph::new(network_lines).block(panel_block("TOPOLOGY STATE")),
+        top[0],
+    );
+    frame.render_widget(
+        Paragraph::new(runtime_lines).block(panel_block("RUNTIME STATE")),
+        top[1],
+    );
 
     let bottom = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(30), Constraint::Percentage(30)])
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
+        ])
         .split(layout[1]);
 
     let chat_lines = vec![
         Line::from(Span::styled("CHAT", title_style())),
         Line::from(Span::styled(
-            format!("room {}", app.snapshot.current_room.as_deref().unwrap_or("-")),
+            format!(
+                "room {}",
+                app.snapshot.current_room.as_deref().unwrap_or("-")
+            ),
             value_style(),
         )),
         Line::from(Span::styled(
@@ -1189,7 +1308,10 @@ fn draw_dashboard(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
             subtle_style(),
         )),
     ];
-    frame.render_widget(Paragraph::new(chat_lines).block(panel_block("CHAT STATE")), bottom[0]);
+    frame.render_widget(
+        Paragraph::new(chat_lines).block(panel_block("CHAT STATE")),
+        bottom[0],
+    );
     frame.render_widget(
         Paragraph::new(lines_from_kv(&app.snapshot.gateway_lines))
             .block(panel_block("GATEWAY"))
@@ -1207,11 +1329,18 @@ fn draw_dashboard(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
 fn draw_chat(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
     let layout = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(28), Constraint::Percentage(42), Constraint::Min(24)])
+        .constraints([
+            Constraint::Length(28),
+            Constraint::Percentage(42),
+            Constraint::Min(24),
+        ])
         .split(area);
 
     let room_items = if app.snapshot.rooms.is_empty() {
-        vec![ListItem::new(Line::from(Span::styled("no rooms observed", subtle_style())))]
+        vec![ListItem::new(Line::from(Span::styled(
+            "no rooms observed",
+            subtle_style(),
+        )))]
     } else {
         app.snapshot
             .rooms
@@ -1225,7 +1354,10 @@ fn draw_chat(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
                     "○"
                 };
                 ListItem::new(vec![
-                    Line::from(Span::styled(format!("{} {}", marker, room.name), value_style())),
+                    Line::from(Span::styled(
+                        format!("{} {}", marker, room.name),
+                        value_style(),
+                    )),
                     Line::from(Span::styled(
                         format!("{} active · {} events", room.active_members, room.events),
                         subtle_style(),
@@ -1236,7 +1368,10 @@ fn draw_chat(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
     };
 
     let inbox_items = if app.snapshot.inbox.is_empty() {
-        vec![ListItem::new(Line::from(Span::styled("inbox empty", subtle_style())))]
+        vec![ListItem::new(Line::from(Span::styled(
+            "inbox empty",
+            subtle_style(),
+        )))]
     } else {
         app.snapshot
             .inbox
@@ -1266,7 +1401,10 @@ fn draw_chat(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
     let details = chat_detail_lines(app);
 
     frame.render_widget(List::new(room_items).block(panel_block("ROOMS")), layout[0]);
-    frame.render_widget(List::new(inbox_items).block(panel_block("INBOX")), layout[1]);
+    frame.render_widget(
+        List::new(inbox_items).block(panel_block("INBOX")),
+        layout[1],
+    );
     frame.render_widget(
         Paragraph::new(details)
             .block(panel_block("CHAT OPERATIONS"))
@@ -1321,8 +1459,11 @@ fn draw_topology(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
         ],
     )
     .header(
-        Row::new(vec!["Peer", "State", "Health", "Session", "Latency"])
-            .style(Style::default().fg(Color::LightMagenta).add_modifier(Modifier::BOLD)),
+        Row::new(vec!["Peer", "State", "Health", "Session", "Latency"]).style(
+            Style::default()
+                .fg(Color::LightMagenta)
+                .add_modifier(Modifier::BOLD),
+        ),
     )
     .block(panel_block("TOPOLOGY"));
     frame.render_widget(table, area);
@@ -1345,7 +1486,8 @@ fn draw_gateways(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
                     Cell::from(format!("{:?}", route.trust_state)),
                     Cell::from(truncate_with_ellipsis(&route.bridge.external_target, 28)),
                     Cell::from(
-                        route.bridge
+                        route
+                            .bridge
                             .fetch_latency_ms
                             .map(|value| format!("{}ms", value))
                             .unwrap_or_else(|| "-".to_string()),
@@ -1377,8 +1519,11 @@ fn draw_gateways(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
                 ],
             )
             .header(
-                Row::new(vec!["Route", "Trust", "External Target", "Latency"])
-                    .style(Style::default().fg(Color::LightMagenta).add_modifier(Modifier::BOLD)),
+                Row::new(vec!["Route", "Trust", "External Target", "Latency"]).style(
+                    Style::default()
+                        .fg(Color::LightMagenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
             )
             .block(panel_block("GATEWAYS"));
             frame.render_widget(table, layout[0]);
@@ -1386,7 +1531,10 @@ fn draw_gateways(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
     } else {
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from(Span::styled("runtime shell state unavailable", value_style())),
+                Line::from(Span::styled(
+                    "runtime shell state unavailable",
+                    value_style(),
+                )),
                 Line::from(Span::styled(
                     "start the node and mount a gateway surface to populate this view",
                     subtle_style(),
@@ -1408,7 +1556,10 @@ fn draw_gateways(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
 
 fn draw_events(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
     let mut lines = if app.events.is_empty() {
-        vec![Line::from(Span::styled("no runtime events observed", subtle_style()))]
+        vec![Line::from(Span::styled(
+            "no runtime events observed",
+            subtle_style(),
+        ))]
     } else {
         app.events
             .iter()
@@ -1417,7 +1568,9 @@ fn draw_events(frame: &mut Frame, app: &ConsoleApp, area: Rect) {
                     Span::styled(format!("{} ", event.timestamp), subtle_style()),
                     Span::styled(
                         format!("[{}] ", event.subsystem.to_uppercase()),
-                        Style::default().fg(event.tone.color()).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(event.tone.color())
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(event.message.clone(), Style::default().fg(Color::White)),
                 ])
@@ -1508,7 +1661,10 @@ fn chat_detail_lines(app: &ConsoleApp) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(Span::styled("CHAT", title_style())),
         Line::from(Span::styled(
-            format!("current room {}", app.snapshot.current_room.as_deref().unwrap_or("-")),
+            format!(
+                "current room {}",
+                app.snapshot.current_room.as_deref().unwrap_or("-")
+            ),
             value_style(),
         )),
         Line::from(Span::styled(
@@ -1522,32 +1678,52 @@ fn chat_detail_lines(app: &ConsoleApp) -> Vec<Line<'static>> {
 
     if let Some(room) = &app.snapshot.selected_room {
         lines.push(Line::from(Span::styled(
-            format!("focus {} · joined {} · active {}", room.name, yes_no(room.joined), room.active_members),
+            format!(
+                "focus {} · joined {} · active {}",
+                room.name,
+                yes_no(room.joined),
+                room.active_members
+            ),
             subtle_style(),
         )));
         lines.push(Line::from(Span::styled("members", title_style())));
         if room.members.is_empty() {
-            lines.push(Line::from(Span::styled("no members observed", subtle_style())));
+            lines.push(Line::from(Span::styled(
+                "no members observed",
+                subtle_style(),
+            )));
         } else {
             for member in &room.members {
                 lines.push(Line::from(Span::styled(member.clone(), subtle_style())));
             }
         }
-        lines.push(Line::from(Span::styled("recent room events", title_style())));
+        lines.push(Line::from(Span::styled(
+            "recent room events",
+            title_style(),
+        )));
         if room.recent_events.is_empty() {
-            lines.push(Line::from(Span::styled("no room events observed", subtle_style())));
+            lines.push(Line::from(Span::styled(
+                "no room events observed",
+                subtle_style(),
+            )));
         } else {
             for event in &room.recent_events {
                 lines.push(Line::from(Span::styled(event.clone(), subtle_style())));
             }
         }
     } else {
-        lines.push(Line::from(Span::styled("no room context available", subtle_style())));
+        lines.push(Line::from(Span::styled(
+            "no room context available",
+            subtle_style(),
+        )));
     }
 
     lines.push(Line::from(Span::styled("sessions", title_style())));
     if app.snapshot.chat_sessions.is_empty() {
-        lines.push(Line::from(Span::styled("no chat sessions observed", subtle_style())));
+        lines.push(Line::from(Span::styled(
+            "no chat sessions observed",
+            subtle_style(),
+        )));
     } else {
         for session in &app.snapshot.chat_sessions {
             lines.push(Line::from(Span::styled(session.clone(), subtle_style())));
@@ -1556,10 +1732,16 @@ fn chat_detail_lines(app: &ConsoleApp) -> Vec<Line<'static>> {
 
     lines.push(Line::from(Span::styled("notifications", title_style())));
     if app.snapshot.notifications.is_empty() {
-        lines.push(Line::from(Span::styled("no unread notifications", subtle_style())));
+        lines.push(Line::from(Span::styled(
+            "no unread notifications",
+            subtle_style(),
+        )));
     } else {
         for notification in &app.snapshot.notifications {
-            lines.push(Line::from(Span::styled(notification.clone(), subtle_style())));
+            lines.push(Line::from(Span::styled(
+                notification.clone(),
+                subtle_style(),
+            )));
         }
     }
 
@@ -1568,11 +1750,19 @@ fn chat_detail_lines(app: &ConsoleApp) -> Vec<Line<'static>> {
 
 fn lines_from_kv(lines: &[String]) -> Vec<Line<'static>> {
     if lines.is_empty() {
-        return vec![Line::from(Span::styled("no runtime diagnostics observed", subtle_style()))];
+        return vec![Line::from(Span::styled(
+            "no runtime diagnostics observed",
+            subtle_style(),
+        ))];
     }
     lines
         .iter()
-        .map(|line| Line::from(Span::styled(truncate_with_ellipsis(line, 44), subtle_style())))
+        .map(|line| {
+            Line::from(Span::styled(
+                truncate_with_ellipsis(line, 44),
+                subtle_style(),
+            ))
+        })
         .collect::<Vec<_>>()
 }
 
@@ -1584,11 +1774,15 @@ fn panel_block(title: &str) -> Block<'static> {
 }
 
 fn title_style() -> Style {
-    Style::default().fg(Color::LightMagenta).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(Color::LightMagenta)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn value_style() -> Style {
-    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn subtle_style() -> Style {
@@ -1596,7 +1790,9 @@ fn subtle_style() -> Style {
 }
 
 fn error_style() -> Style {
-    Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(Color::LightRed)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn border_style() -> Style {
@@ -1640,7 +1836,12 @@ fn count_active_peers(topology: &PeerTopology) -> usize {
     topology
         .peers
         .values()
-        .filter(|peer| matches!(peer.state, PeerConnectionState::Active | PeerConnectionState::Syncing))
+        .filter(|peer| {
+            matches!(
+                peer.state,
+                PeerConnectionState::Active | PeerConnectionState::Syncing
+            )
+        })
         .count()
 }
 
@@ -1770,7 +1971,9 @@ fn parse_repeat_suffix(message: &str) -> Option<(&str, usize)> {
 }
 
 fn repeat_base_message(message: &str) -> &str {
-    parse_repeat_suffix(message).map(|(base, _)| base).unwrap_or(message)
+    parse_repeat_suffix(message)
+        .map(|(base, _)| base)
+        .unwrap_or(message)
 }
 
 fn load_runtime_shell_state(data_dir: &PathBuf) -> Result<Option<RuntimeShellState>> {
@@ -1778,8 +1981,12 @@ fn load_runtime_shell_state(data_dir: &PathBuf) -> Result<Option<RuntimeShellSta
     if !shell_state_path.exists() {
         return Ok(None);
     }
-    let bytes = std::fs::read(&shell_state_path)
-        .with_context(|| format!("failed to read runtime shell state at {}", shell_state_path.display()))?;
+    let bytes = std::fs::read(&shell_state_path).with_context(|| {
+        format!(
+            "failed to read runtime shell state at {}",
+            shell_state_path.display()
+        )
+    })?;
     let state = serde_json::from_slice(&bytes)?;
     Ok(Some(state))
 }
@@ -1797,21 +2004,35 @@ fn resolve_domain(data_dir: &PathBuf, raw_domain: &str) -> Result<String> {
         .build()?
         .block_on(dns.resolve(&domain))?;
     Ok(match result {
-        Some(record) => format!("resolved {} -> {}", record.domain, shorten_peer_id(&record.target_peer_id)),
+        Some(record) => format!(
+            "resolved {} -> {}",
+            record.domain,
+            shorten_peer_id(&record.target_peer_id)
+        ),
         None => format!("route {} not found", domain),
     })
 }
 
 fn open_runtime_route(data_dir: &PathBuf, raw_route: &str) -> Result<String> {
     let uri = parse_void_uri_input(raw_route)?;
-    let persistent_identity = PersistentNodeIdentity::load_or_create_dir(data_dir)
-        .with_context(|| format!("failed to load persistent identity in {}", data_dir.display()))?;
+    let persistent_identity =
+        PersistentNodeIdentity::load_or_create_dir(data_dir).with_context(|| {
+            format!(
+                "failed to load persistent identity in {}",
+                data_dir.display()
+            )
+        })?;
     let dns = Arc::new(
         PersistentVoidDns::load_or_create(data_dir)
             .with_context(|| format!("failed to load dns cache in {}", data_dir.display()))?,
     );
     let (network, _inbox) = network_channels(16);
-    let runtime = VoidRuntime::new(NodeIdentity::generate(), dns.clone(), network, RuntimeConfig::default());
+    let runtime = VoidRuntime::new(
+        NodeIdentity::generate(),
+        dns.clone(),
+        network,
+        RuntimeConfig::default(),
+    );
     let mut shell = RuntimeShell::load_or_create(data_dir, runtime)?;
     shell.reconcile_registry_owner(&persistent_identity.peer_id_string())?;
     tokio::runtime::Builder::new_current_thread()

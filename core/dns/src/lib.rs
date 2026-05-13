@@ -137,7 +137,9 @@ impl DnsRecord {
     }
 
     pub fn fingerprint(&self) -> Result<String, VoidDnsError> {
-        Ok(blake3::hash(&serde_json::to_vec(self)?).to_hex().to_string())
+        Ok(blake3::hash(&serde_json::to_vec(self)?)
+            .to_hex()
+            .to_string())
     }
 
     fn unsigned(&self) -> UnsignedDnsRecord {
@@ -157,9 +159,7 @@ impl DnsRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResolutionTarget {
     Peer { peer_id: String },
-    Content {
-        content_id: String,
-    },
+    Content { content_id: String },
     Service(ServiceTarget),
 }
 
@@ -442,7 +442,10 @@ impl PersistentVoidDns {
         })
     }
 
-    pub async fn resolve_route(&self, uri: &VoidUri) -> Result<Option<DnsResolvedRoute>, VoidDnsError> {
+    pub async fn resolve_route(
+        &self,
+        uri: &VoidUri,
+    ) -> Result<Option<DnsResolvedRoute>, VoidDnsError> {
         <Self as VoidDnsResolver>::resolve_route(self, uri).await
     }
 
@@ -460,7 +463,10 @@ impl VoidDnsResolver for PersistentVoidDns {
     async fn resolve(&self, domain: &VoidDomain) -> Result<Option<DnsRecord>, VoidDnsError> {
         let _ = self.purge_expired().await?;
         let state = self.state.read().await;
-        Ok(state.records.get(domain.as_str()).map(|entry| entry.record.clone()))
+        Ok(state
+            .records
+            .get(domain.as_str())
+            .map(|entry| entry.record.clone()))
     }
 }
 
@@ -478,12 +484,17 @@ pub fn enqueue_dns_command(
         issued_at_unix_ms: unix_millis(),
         command,
     };
-    let path = commands_dir.join(format!("{}-{}.json", envelope.issued_at_unix_ms, envelope.command_id));
+    let path = commands_dir.join(format!(
+        "{}-{}.json",
+        envelope.issued_at_unix_ms, envelope.command_id
+    ));
     persist_json(&path, &envelope)?;
     Ok(path)
 }
 
-pub fn drain_dns_commands(data_dir: impl AsRef<Path>) -> Result<Vec<QueuedDnsCommand>, VoidDnsError> {
+pub fn drain_dns_commands(
+    data_dir: impl AsRef<Path>,
+) -> Result<Vec<QueuedDnsCommand>, VoidDnsError> {
     let commands_dir = data_dir.as_ref().join("dns").join(DNS_COMMANDS_DIR);
     if !commands_dir.exists() {
         return Ok(Vec::new());
@@ -637,7 +648,10 @@ mod tests {
         assert!(matches!(outcome, DnsApplyOutcome::Conflict { .. }));
         let inspection = dns.inspect(&domain).await.unwrap();
         assert_eq!(inspection.conflicts.len(), 1);
-        assert_eq!(inspection.active_record.unwrap().record.owner_peer_id, owner_a.peer_id_string());
+        assert_eq!(
+            inspection.active_record.unwrap().record.owner_peer_id,
+            owner_a.peer_id_string()
+        );
     }
 
     #[tokio::test]

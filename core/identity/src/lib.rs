@@ -340,12 +340,8 @@ impl SignedPeerPresence {
         }
 
         let signature = STANDARD_NO_PAD.decode(self.signature.as_bytes())?;
-        let payload = presence_payload(
-            &self.peer_id,
-            &self.agent,
-            self.issued_unix_ms,
-            &self.nonce,
-        );
+        let payload =
+            presence_payload(&self.peer_id, &self.agent, self.issued_unix_ms, &self.nonce);
         if !public_key.verify(payload.as_bytes(), &signature) {
             return Err(IdentityError::InvalidPresenceSignature);
         }

@@ -16,9 +16,11 @@ use ui::{
 };
 use void_chat::{
     enqueue_local_command, load_chat_inbox, load_chat_notifications, load_chat_rooms,
-    load_chat_sessions, unread_count, ChatLocalCommand, ChatError,
+    load_chat_sessions, unread_count, ChatError, ChatLocalCommand,
 };
-use void_dns::{DnsResolvedRoute, PersistentVoidDns, ResolutionTarget, VoidDnsResolver, VoidDomain};
+use void_dns::{
+    DnsResolvedRoute, PersistentVoidDns, ResolutionTarget, VoidDnsResolver, VoidDomain,
+};
 use void_identity::{NodeIdentity, PersistentNodeIdentity};
 use void_protocol::{Envelope, VoidUri};
 use void_transport::{event::TransportEvent, NetworkHandle, TransportCommand, TransportError};
@@ -588,7 +590,11 @@ where
             .cloned()
             .ok_or_else(|| RuntimeError::SurfaceRegistrationMissing(route.to_string()))?;
         let frame = self.resolve_surface_frame(&registration)?;
-        let ui_surface = self.state.ui_surfaces.iter().find(|surface| surface.route == route);
+        let ui_surface = self
+            .state
+            .ui_surfaces
+            .iter()
+            .find(|surface| surface.route == route);
         let mount = self.state.mounts.iter().find(|mount| mount.route == route);
 
         Ok(RuntimeSurfaceView {
@@ -618,15 +624,18 @@ where
             .find_registration_by_route(route)
             .cloned()
             .ok_or_else(|| RuntimeError::SurfaceRegistrationMissing(route.to_string()))?;
-        let mut events = vec![TransportEvent::ActionDispatched {
-            route: route.to_string(),
-            surface_id: registration.surface_id.clone(),
-            action: request.action.clone(),
-        }, TransportEvent::SurfaceActionTriggered {
-            route: route.to_string(),
-            surface_id: registration.surface_id.clone(),
-            action: request.action.clone(),
-        }];
+        let mut events = vec![
+            TransportEvent::ActionDispatched {
+                route: route.to_string(),
+                surface_id: registration.surface_id.clone(),
+                action: request.action.clone(),
+            },
+            TransportEvent::SurfaceActionTriggered {
+                route: route.to_string(),
+                surface_id: registration.surface_id.clone(),
+                action: request.action.clone(),
+            },
+        ];
 
         let summary = match self.execute_surface_action(&registration.surface_id, &request) {
             Ok(summary) => {
@@ -660,7 +669,12 @@ where
                     capability,
                     reason: "permission not granted in runtime shell".to_string(),
                 });
-                self.record_surface_action_error(route, &registration.surface_id, &request, &events)?;
+                self.record_surface_action_error(
+                    route,
+                    &registration.surface_id,
+                    &request,
+                    &events,
+                )?;
                 format!("permission denied for {}", request.action)
             }
             Err(error) => {
@@ -670,7 +684,12 @@ where
                     surface_id: registration.surface_id.clone(),
                     error: format!("handler {} failed: {error_text}", request.action),
                 });
-                self.record_surface_action_error(route, &registration.surface_id, &request, &events)?;
+                self.record_surface_action_error(
+                    route,
+                    &registration.surface_id,
+                    &request,
+                    &events,
+                )?;
                 format!("action failed: {error_text}")
             }
         };
@@ -756,7 +775,8 @@ where
                     .cloned()
                     .filter(|value| !value.trim().is_empty())
                     .ok_or_else(|| RuntimeError::InputMissing("room".to_string()))?;
-                let path = enqueue_local_command(&self.data_dir, ChatLocalCommand::SwitchRoom { room })?;
+                let path =
+                    enqueue_local_command(&self.data_dir, ChatLocalCommand::SwitchRoom { room })?;
                 Ok(format!("queued chat.switch_room via {}", path.display()))
             }
             "chat.mark_read" => {
@@ -766,7 +786,8 @@ where
                     .get("room")
                     .cloned()
                     .filter(|value| !value.trim().is_empty());
-                let path = enqueue_local_command(&self.data_dir, ChatLocalCommand::MarkRead { room })?;
+                let path =
+                    enqueue_local_command(&self.data_dir, ChatLocalCommand::MarkRead { room })?;
                 Ok(format!("queued chat.mark_read via {}", path.display()))
             }
             "surface.refresh" => Ok("surface refreshed".to_string()),
@@ -847,9 +868,12 @@ where
         match self.resolve_surface_frame(&registration) {
             Ok(frame) => {
                 let local_state = prefixed_input_state(&input_state);
-                let runtime_state = classify_runtime_state(&registration.surface_id, &frame.bindings);
-                let distributed_state = classify_distributed_state(&registration.surface_id, &frame.bindings);
-                let merged_state = merge_surface_state_maps(&local_state, &runtime_state, &distributed_state);
+                let runtime_state =
+                    classify_runtime_state(&registration.surface_id, &frame.bindings);
+                let distributed_state =
+                    classify_distributed_state(&registration.surface_id, &frame.bindings);
+                let merged_state =
+                    merge_surface_state_maps(&local_state, &runtime_state, &distributed_state);
                 let mut source_snapshot = frame.source_snapshot.clone();
                 source_snapshot.state_hash = stable_hash(&merged_state)?;
 
@@ -864,7 +888,9 @@ where
                     .unwrap_or(true);
                 let hot_reloaded = previous
                     .as_ref()
-                    .map(|surface| surface.source_snapshot.surface_hash != source_snapshot.surface_hash)
+                    .map(|surface| {
+                        surface.source_snapshot.surface_hash != source_snapshot.surface_hash
+                    })
                     .unwrap_or(false);
                 let changed = force || previous.is_none() || state_changed || hot_reloaded;
 
@@ -876,29 +902,38 @@ where
                     });
                 }
 
-                let rendered = match render_terminal_surface(&frame.tree, &frame.bindings, &input_state) {
-                    Ok(rendered) => rendered,
-                    Err(error) => {
-                        return self.render_surface_error_boundary(
-                            route,
-                            &registration,
-                            previous.as_ref(),
-                            input_state,
-                            format!("render failed: {error}"),
-                        );
-                    }
-                };
+                let rendered =
+                    match render_terminal_surface(&frame.tree, &frame.bindings, &input_state) {
+                        Ok(rendered) => rendered,
+                        Err(error) => {
+                            return self.render_surface_error_boundary(
+                                route,
+                                &registration,
+                                previous.as_ref(),
+                                input_state,
+                                format!("render failed: {error}"),
+                            );
+                        }
+                    };
                 let rerender_count = previous
                     .as_ref()
                     .map(|surface| surface.rerender_count.saturating_add(1))
                     .unwrap_or(1);
                 let hot_reload_count = previous
                     .as_ref()
-                    .map(|surface| surface.hot_reload_count.saturating_add(u64::from(hot_reloaded)))
+                    .map(|surface| {
+                        surface
+                            .hot_reload_count
+                            .saturating_add(u64::from(hot_reloaded))
+                    })
                     .unwrap_or(u64::from(hot_reloaded));
                 let sync_count = previous
                     .as_ref()
-                    .map(|surface| surface.sync_count.saturating_add(u64::from(source == "runtime-sync")))
+                    .map(|surface| {
+                        surface
+                            .sync_count
+                            .saturating_add(u64::from(source == "runtime-sync"))
+                    })
                     .unwrap_or(u64::from(source == "runtime-sync"));
                 let permission_denials = previous
                     .as_ref()
@@ -945,9 +980,9 @@ where
                         surface_id: registration.surface_id.clone(),
                         state_revision,
                         changed_bindings: changed_bindings.clone(),
-                        distributed: changed_bindings
-                            .iter()
-                            .any(|binding| is_distributed_state_key(&registration.surface_id, binding)),
+                        distributed: changed_bindings.iter().any(|binding| {
+                            is_distributed_state_key(&registration.surface_id, binding)
+                        }),
                     });
                 }
                 events.push(TransportEvent::RuntimeTreeBuilt {
@@ -985,8 +1020,12 @@ where
                     sync_count,
                     permission_denials,
                     last_changed_bindings: changed_bindings,
-                    last_action: previous.as_ref().and_then(|surface| surface.last_action.clone()),
-                    last_handler: previous.as_ref().and_then(|surface| surface.last_handler.clone()),
+                    last_action: previous
+                        .as_ref()
+                        .and_then(|surface| surface.last_action.clone()),
+                    last_handler: previous
+                        .as_ref()
+                        .and_then(|surface| surface.last_handler.clone()),
                     last_error: None,
                     last_render_duration_ms: rendered.render_duration_ms,
                     last_source_modified_unix_ms: source_snapshot.source_modified_unix_ms,
@@ -1048,15 +1087,22 @@ where
             rerender_count: previous
                 .map(|surface| surface.rerender_count.saturating_add(1))
                 .unwrap_or(1),
-            hot_reload_count: previous.map(|surface| surface.hot_reload_count).unwrap_or_default(),
-            sync_count: previous.map(|surface| surface.sync_count).unwrap_or_default(),
-            permission_denials: previous.map(|surface| surface.permission_denials).unwrap_or_default(),
+            hot_reload_count: previous
+                .map(|surface| surface.hot_reload_count)
+                .unwrap_or_default(),
+            sync_count: previous
+                .map(|surface| surface.sync_count)
+                .unwrap_or_default(),
+            permission_denials: previous
+                .map(|surface| surface.permission_denials)
+                .unwrap_or_default(),
             last_changed_bindings: Vec::new(),
             last_action: previous.and_then(|surface| surface.last_action.clone()),
             last_handler: previous.and_then(|surface| surface.last_handler.clone()),
             last_error: Some(error.clone()),
             last_render_duration_ms: rendered.render_duration_ms,
-            last_source_modified_unix_ms: previous.and_then(|surface| surface.last_source_modified_unix_ms),
+            last_source_modified_unix_ms: previous
+                .and_then(|surface| surface.last_source_modified_unix_ms),
             last_updated_unix_ms: unix_millis(),
         });
         self.state.updated_unix_ms = unix_millis();
@@ -1092,7 +1138,8 @@ where
                 binding_hash: stable_hash(&bindings)?,
                 state_hash: String::new(),
                 surface_modified_unix_ms: file_modified_unix_ms(Path::new(&surface_path)),
-                source_modified_unix_ms: self.binding_source_modified_unix_ms(&registration.surface_id),
+                source_modified_unix_ms: self
+                    .binding_source_modified_unix_ms(&registration.surface_id),
             },
         })
     }
@@ -1177,11 +1224,22 @@ where
 
         let now = unix_millis();
         let surface_id = registration.surface_id.clone();
-        let (granted_permissions, rejected_capabilities) =
-            self.negotiate_capabilities(&surface_id, &route.target_peer_id, &route.capabilities, &mut events, now);
+        let (granted_permissions, rejected_capabilities) = self.negotiate_capabilities(
+            &surface_id,
+            &route.target_peer_id,
+            &route.capabilities,
+            &mut events,
+            now,
+        );
 
         if !rejected_capabilities.is_empty() {
-            self.record_failed_mount(&uri, &route, &surface_id, &granted_permissions, &rejected_capabilities)?;
+            self.record_failed_mount(
+                &uri,
+                &route,
+                &surface_id,
+                &granted_permissions,
+                &rejected_capabilities,
+            )?;
             return Err(RuntimeError::PermissionDenied {
                 surface_id,
                 missing_capabilities: rejected_capabilities,
@@ -1204,7 +1262,10 @@ where
                 Ok((bridge, bridge_session)) => {
                     gateway_render_details = Some((
                         bridge.response_size.unwrap_or_default(),
-                        bridge.render_mode.clone().unwrap_or_else(|| "text".to_string()),
+                        bridge
+                            .render_mode
+                            .clone()
+                            .unwrap_or_else(|| "text".to_string()),
                     ));
                     events.push(TransportEvent::GatewayMounted {
                         route: uri.to_string(),
@@ -1231,7 +1292,13 @@ where
                     });
                 }
                 Err(error) => {
-                    self.record_gateway_failure(&uri, &route, &registration, &session_id, &error.to_string())?;
+                    self.record_gateway_failure(
+                        &uri,
+                        &route,
+                        &registration,
+                        &session_id,
+                        &error.to_string(),
+                    )?;
                     events.push(TransportEvent::GatewayBridgeFailed {
                         route: uri.to_string(),
                         gateway_id: registration.surface_id.clone(),
@@ -1289,7 +1356,8 @@ where
         });
         self.persist()?;
 
-        let (rendered_surface, render_events) = self.render_surface_once(&uri.to_string(), BTreeMap::new())?;
+        let (rendered_surface, render_events) =
+            self.render_surface_once(&uri.to_string(), BTreeMap::new())?;
         events.extend(render_events);
         if let Some((bytes, render_mode)) = gateway_render_details {
             events.push(TransportEvent::ResponseSurfaceRendered {
@@ -1312,7 +1380,12 @@ where
     }
 
     fn ensure_builtin_registry(&mut self) {
-        if self.state.registry.iter().any(|entry| entry.domain == "chat.void") {
+        if self
+            .state
+            .registry
+            .iter()
+            .any(|entry| entry.domain == "chat.void")
+        {
         } else {
             let peer_owner = self.runtime.identity.peer_id().to_string();
             self.state.registry.push(RuntimeSurfaceRegistration {
@@ -1336,10 +1409,17 @@ where
                 supported_protocols: vec!["void".to_string()],
                 external_route_base: None,
                 trust_level: None,
-                surface_path: Some(self.ensure_builtin_surface_file("chat.surface", CHAT_SURFACE_SOURCE)),
+                surface_path: Some(
+                    self.ensure_builtin_surface_file("chat.surface", CHAT_SURFACE_SOURCE),
+                ),
             });
         }
-        if !self.state.registry.iter().any(|entry| entry.domain == "local.gateway.void") {
+        if !self
+            .state
+            .registry
+            .iter()
+            .any(|entry| entry.domain == "local.gateway.void")
+        {
             let peer_owner = self.runtime.identity.peer_id().to_string();
             let domain = "local.gateway.void";
             self.state.registry.push(RuntimeSurfaceRegistration {
@@ -1354,7 +1434,9 @@ where
                 supported_protocols: vec!["http".to_string(), "https".to_string()],
                 external_route_base: Some(default_gateway_external_base(domain)),
                 trust_level: Some(GatewayTrustLevel::Trusted),
-                surface_path: Some(self.ensure_builtin_surface_file("gateway.surface", GATEWAY_SURFACE_SOURCE)),
+                surface_path: Some(
+                    self.ensure_builtin_surface_file("gateway.surface", GATEWAY_SURFACE_SOURCE),
+                ),
             });
             self.upsert_gateway_trust(GatewayTrustPolicy {
                 gateway_domain: domain.to_string(),
@@ -1398,12 +1480,17 @@ where
         }
     }
 
-    fn build_gateway_bindings(&self, surface_id: &str) -> Result<BTreeMap<String, String>, RuntimeError> {
+    fn build_gateway_bindings(
+        &self,
+        surface_id: &str,
+    ) -> Result<BTreeMap<String, String>, RuntimeError> {
         let registration = self
             .state
             .registry
             .iter()
-            .find(|entry| entry.surface_id == surface_id && entry.surface_kind == RuntimeSurfaceKind::Gateway)
+            .find(|entry| {
+                entry.surface_id == surface_id && entry.surface_kind == RuntimeSurfaceKind::Gateway
+            })
             .ok_or_else(|| RuntimeError::SurfaceRegistrationMissing(surface_id.to_string()))?;
         let trust = self
             .state
@@ -1430,8 +1517,14 @@ where
             .collect::<Vec<_>>();
 
         let mut bindings = BTreeMap::new();
-        bindings.insert("gateway.gateway_id".to_string(), registration.surface_id.clone());
-        bindings.insert("gateway.owner_peer".to_string(), registration.owner_peer_id.clone());
+        bindings.insert(
+            "gateway.gateway_id".to_string(),
+            registration.surface_id.clone(),
+        );
+        bindings.insert(
+            "gateway.owner_peer".to_string(),
+            registration.owner_peer_id.clone(),
+        );
         bindings.insert(
             "gateway.supported_protocols".to_string(),
             if registration.supported_protocols.is_empty() {
@@ -1444,9 +1537,13 @@ where
             "gateway.trust_state".to_string(),
             format!(
                 "trust_state={:?} trust_level={:?} warning={}",
-                trust.map(|policy| policy.trust_state).unwrap_or(GatewayTrustState::Pending),
+                trust
+                    .map(|policy| policy.trust_state)
+                    .unwrap_or(GatewayTrustState::Pending),
                 trust.map(|policy| policy.trust_level).unwrap_or_default(),
-                trust.and_then(|policy| policy.last_warning.clone()).unwrap_or_else(|| "-".to_string())
+                trust
+                    .and_then(|policy| policy.last_warning.clone())
+                    .unwrap_or_else(|| "-".to_string())
             ),
         );
         bindings.insert(
@@ -1456,7 +1553,12 @@ where
             } else {
                 active_routes
                     .iter()
-                    .map(|route| format!("{} -> {} {:?}", route.route, route.bridge.external_target, route.bridge.lifecycle_state))
+                    .map(|route| {
+                        format!(
+                            "{} -> {} {:?}",
+                            route.route, route.bridge.external_target, route.bridge.lifecycle_state
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             },
@@ -1472,7 +1574,10 @@ where
                 .unwrap_or_else(|| {
                     format!(
                         "external_target={}",
-                        registration.external_route_base.clone().unwrap_or_else(|| "unresolved".to_string())
+                        registration
+                            .external_route_base
+                            .clone()
+                            .unwrap_or_else(|| "unresolved".to_string())
                     )
                 }),
         );
@@ -1506,7 +1611,8 @@ where
                         if route.bridge.request.query.is_empty() {
                             "-".to_string()
                         } else {
-                            route.bridge
+                            route
+                                .bridge
                                 .request
                                 .query
                                 .iter()
@@ -1516,7 +1622,9 @@ where
                         }
                     )
                 })
-                .unwrap_or_else(|| "method=GET url=unresolved timeout=0ms request_id=- query=-".to_string()),
+                .unwrap_or_else(|| {
+                    "method=GET url=unresolved timeout=0ms request_id=- query=-".to_string()
+                }),
         );
         bindings.insert(
             "gateway.response_status".to_string(),
@@ -1557,7 +1665,8 @@ where
                         "cache_state={} snapshot_id={} cacheable={}",
                         route.bridge.cache_state.as_deref().unwrap_or("-"),
                         route.bridge.snapshot_id.as_deref().unwrap_or("-"),
-                        route.bridge
+                        route
+                            .bridge
                             .response
                             .as_ref()
                             .map(|response| response.cacheable)
@@ -1602,7 +1711,9 @@ where
                         route.bridge.external_target,
                     )
                 })
-                .unwrap_or_else(|| "snapshot_id=- cache_state=- external_target=unresolved".to_string()),
+                .unwrap_or_else(|| {
+                    "snapshot_id=- cache_state=- external_target=unresolved".to_string()
+                }),
         );
         bindings.insert(
             "gateway.permission_history".to_string(),
@@ -1616,7 +1727,12 @@ where
                             .iter()
                             .rev()
                             .take(8)
-                            .map(|entry| format!("{} allowed={} reason={}", entry.capability, entry.allowed, entry.reason))
+                            .map(|entry| {
+                                format!(
+                                    "{} allowed={} reason={}",
+                                    entry.capability, entry.allowed, entry.reason
+                                )
+                            })
                             .collect::<Vec<_>>()
                             .join("\n")
                     }
@@ -1626,22 +1742,30 @@ where
         Ok(bindings)
     }
 
-    fn build_chat_bindings(&self, surface_id: &str) -> Result<BTreeMap<String, String>, RuntimeError> {
+    fn build_chat_bindings(
+        &self,
+        surface_id: &str,
+    ) -> Result<BTreeMap<String, String>, RuntimeError> {
         let inbox = load_chat_inbox(&self.data_dir)?;
         let notifications = load_chat_notifications(&self.data_dir)?;
         let rooms = load_chat_rooms(&self.data_dir)?;
         let sessions = load_chat_sessions(&self.data_dir)?;
         let topology_file = self.data_dir.join("topology.json");
         let topology = if topology_file.exists() {
-            Some(void_transport::PeerTopology::load(&topology_file)
-                .map_err(|error| RuntimeError::Topology(error.to_string()))?)
+            Some(
+                void_transport::PeerTopology::load(&topology_file)
+                    .map_err(|error| RuntimeError::Topology(error.to_string()))?,
+            )
         } else {
             None
         };
-        let current_room = rooms
-            .current_room
-            .clone()
-            .or_else(|| rooms.rooms.iter().find(|room| room.joined).map(|room| room.room.clone()));
+        let current_room = rooms.current_room.clone().or_else(|| {
+            rooms
+                .rooms
+                .iter()
+                .find(|room| room.joined)
+                .map(|room| room.room.clone())
+        });
         let current_room_members = current_room
             .as_ref()
             .and_then(|room_name| rooms.rooms.iter().find(|room| room.room == *room_name));
@@ -1651,7 +1775,13 @@ where
                 topology
                     .peers
                     .values()
-                    .filter(|peer| matches!(peer.state, void_transport::PeerConnectionState::Active | void_transport::PeerConnectionState::Syncing))
+                    .filter(|peer| {
+                        matches!(
+                            peer.state,
+                            void_transport::PeerConnectionState::Active
+                                | void_transport::PeerConnectionState::Syncing
+                        )
+                    })
                     .count()
             })
             .unwrap_or_default();
@@ -1811,10 +1941,9 @@ where
             None,
         )
         .ok()?;
-        self.state
-            .registry
-            .iter()
-            .find(|entry| entry.domain == uri.authority() || entry.entry_uri.authority() == uri.authority())
+        self.state.registry.iter().find(|entry| {
+            entry.domain == uri.authority() || entry.entry_uri.authority() == uri.authority()
+        })
     }
 
     fn require_capability(&self, surface_id: &str, capability: &str) -> Result<(), RuntimeError> {
@@ -1873,7 +2002,8 @@ where
                 .map(|entry| entry.allowed)
                 .unwrap_or_else(|| {
                     self.gateway_capability_is_trusted(surface_id, capability)
-                        || (self.runtime.config.auto_grant_safe_capabilities && is_safe_capability(capability))
+                        || (self.runtime.config.auto_grant_safe_capabilities
+                            && is_safe_capability(capability))
                 });
 
             let grant = RuntimePermissionGrant {
@@ -1986,7 +2116,10 @@ where
             external_target: bridge.external_target.clone(),
             fetch_state: "failed".to_string(),
             response_state: "unavailable".to_string(),
-            permission_state: if matches!(self.gateway_trust_state(&registration.domain), GatewayTrustState::Denied) {
+            permission_state: if matches!(
+                self.gateway_trust_state(&registration.domain),
+                GatewayTrustState::Denied
+            ) {
                 "denied".to_string()
             } else {
                 "rejected".to_string()
@@ -2068,7 +2201,11 @@ where
                 None
             },
             surface_path: Some(self.ensure_builtin_surface_file(
-                if is_gateway { "gateway.surface" } else { "chat.surface" },
+                if is_gateway {
+                    "gateway.surface"
+                } else {
+                    "chat.surface"
+                },
                 if is_gateway {
                     GATEWAY_SURFACE_SOURCE
                 } else {
@@ -2125,7 +2262,9 @@ where
         if matches!(policy.trust_state, GatewayTrustState::Denied)
             || matches!(policy.trust_level, GatewayTrustLevel::Untrusted)
         {
-            return Err(RuntimeError::GatewayTrustDenied(registration.domain.clone()));
+            return Err(RuntimeError::GatewayTrustDenied(
+                registration.domain.clone(),
+            ));
         }
 
         Ok(())
@@ -2153,12 +2292,9 @@ where
         if !capability.starts_with("gateway.") {
             return false;
         }
-        let Some(registration) = self
-            .state
-            .registry
-            .iter()
-            .find(|entry| entry.surface_id == surface_id && entry.surface_kind == RuntimeSurfaceKind::Gateway)
-        else {
+        let Some(registration) = self.state.registry.iter().find(|entry| {
+            entry.surface_id == surface_id && entry.surface_kind == RuntimeSurfaceKind::Gateway
+        }) else {
             return false;
         };
         self.state
@@ -2195,12 +2331,22 @@ where
             lifecycle_state: GatewayBridgeLifecycleState::Prepared,
             request: HttpBridgeRequest {
                 method: "GET".to_string(),
-                target_path: if target_path.is_empty() { "/".to_string() } else { format!("/{target_path}") },
+                target_path: if target_path.is_empty() {
+                    "/".to_string()
+                } else {
+                    format!("/{target_path}")
+                },
                 url: external_target,
                 headers: BTreeMap::from([
-                    ("accept".to_string(), "application/json, text/plain, text/html".to_string()),
+                    (
+                        "accept".to_string(),
+                        "application/json, text/plain, text/html".to_string(),
+                    ),
                     ("x-void-gateway-session".to_string(), session_id.to_string()),
-                    ("x-void-gateway-domain".to_string(), registration.domain.clone()),
+                    (
+                        "x-void-gateway-domain".to_string(),
+                        registration.domain.clone(),
+                    ),
                 ]),
                 query,
                 body: None,
@@ -2245,11 +2391,18 @@ where
         });
 
         let request_method = reqwest::Method::from_bytes(bridge.request.method.as_bytes())
-            .map_err(|error| RuntimeError::HttpBridge(format!("invalid HTTP method {}: {error}", bridge.request.method)))?;
+            .map_err(|error| {
+                RuntimeError::HttpBridge(format!(
+                    "invalid HTTP method {}: {error}",
+                    bridge.request.method
+                ))
+            })?;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(bridge.request.timeout_ms.max(1)))
             .build()
-            .map_err(|error| RuntimeError::HttpBridge(format!("failed to build HTTP bridge client: {error}")))?;
+            .map_err(|error| {
+                RuntimeError::HttpBridge(format!("failed to build HTTP bridge client: {error}"))
+            })?;
         let mut request = client.request(request_method, &bridge.request.url);
         for (name, value) in &bridge.request.headers {
             if let (Ok(header_name), Ok(header_value)) = (
@@ -2264,10 +2417,12 @@ where
         }
 
         let fetch_started_at = unix_millis();
-        let response = request
-            .send()
-            .await
-            .map_err(|error| RuntimeError::HttpBridge(format!("gateway request {} failed: {error}", bridge.request.request_id)))?;
+        let response = request.send().await.map_err(|error| {
+            RuntimeError::HttpBridge(format!(
+                "gateway request {} failed: {error}",
+                bridge.request.request_id
+            ))
+        })?;
         let status = response.status().as_u16();
         let headers = response
             .headers()
@@ -2283,7 +2438,9 @@ where
         let response_body = response
             .bytes()
             .await
-            .map_err(|error| RuntimeError::HttpBridge(format!("gateway response body failed: {error}")))?
+            .map_err(|error| {
+                RuntimeError::HttpBridge(format!("gateway response body failed: {error}"))
+            })?
             .to_vec();
         let fetch_completed_at = unix_millis();
         let fetch_latency_ms = fetch_completed_at.saturating_sub(fetch_started_at);
@@ -2302,7 +2459,9 @@ where
             gateway_peer: registration.owner_peer_id.clone(),
             external_target: bridge.external_target.clone(),
             status,
-            content_type: content_type.clone().unwrap_or_else(|| "application/octet-stream".to_string()),
+            content_type: content_type
+                .clone()
+                .unwrap_or_else(|| "application/octet-stream".to_string()),
             response_size,
             body_preview: render_gateway_preview(content_type.as_deref(), &response_body),
             headers: headers.clone(),
@@ -2370,7 +2529,13 @@ where
                 gateway_peer: registration.owner_peer_id.clone(),
                 external_target: bridge.external_target.clone(),
                 fetch_state: "completed".to_string(),
-                response_state: format!("status={} content_type={}", status, content_type.as_deref().unwrap_or("application/octet-stream")),
+                response_state: format!(
+                    "status={} content_type={}",
+                    status,
+                    content_type
+                        .as_deref()
+                        .unwrap_or("application/octet-stream")
+                ),
                 permission_state: "granted".to_string(),
                 mount_state: MountState::Mounted,
                 started_at_unix_ms: bridge.created_at_unix_ms,
@@ -2448,7 +2613,10 @@ where
         }
     }
 
-    fn persist_gateway_snapshot(&self, snapshot: &GatewayResourceSnapshot) -> Result<(), RuntimeError> {
+    fn persist_gateway_snapshot(
+        &self,
+        snapshot: &GatewayResourceSnapshot,
+    ) -> Result<(), RuntimeError> {
         let snapshot_dir = self
             .data_dir
             .join("gateway")
@@ -2526,9 +2694,13 @@ where
             } else {
                 supported_protocols
             },
-            external_route_base: Some(external_route_base.unwrap_or_else(|| default_gateway_external_base(domain))),
+            external_route_base: Some(
+                external_route_base.unwrap_or_else(|| default_gateway_external_base(domain)),
+            ),
             trust_level: Some(trust_level),
-            surface_path: Some(self.ensure_builtin_surface_file("gateway.surface", GATEWAY_SURFACE_SOURCE)),
+            surface_path: Some(
+                self.ensure_builtin_surface_file("gateway.surface", GATEWAY_SURFACE_SOURCE),
+            ),
         };
         self.upsert_registration(entry.clone());
         self.upsert_gateway_trust(GatewayTrustPolicy {
@@ -2593,24 +2765,31 @@ where
             .state
             .registry
             .iter()
-            .find(|entry| entry.domain == domain && entry.surface_kind == RuntimeSurfaceKind::Gateway)
+            .find(|entry| {
+                entry.domain == domain && entry.surface_kind == RuntimeSurfaceKind::Gateway
+            })
             .cloned()
             .ok_or_else(|| RuntimeError::GatewayNotRegistered(domain.to_string()))?;
-        let mut policy = self.gateway_trust_policy(domain).unwrap_or(GatewayTrustPolicy {
-            gateway_domain: registration.domain.clone(),
-            gateway_id: registration.surface_id.clone(),
-            owner_peer: registration.owner_peer_id.clone(),
-            trust_level,
-            trust_state,
-            capability_scope: registration.capabilities.clone(),
-            runtime_restrictions: Vec::new(),
-            permission_history: Vec::new(),
-            last_warning: None,
-            updated_unix_ms: unix_millis(),
-        });
+        let mut policy = self
+            .gateway_trust_policy(domain)
+            .unwrap_or(GatewayTrustPolicy {
+                gateway_domain: registration.domain.clone(),
+                gateway_id: registration.surface_id.clone(),
+                owner_peer: registration.owner_peer_id.clone(),
+                trust_level,
+                trust_state,
+                capability_scope: registration.capabilities.clone(),
+                runtime_restrictions: Vec::new(),
+                permission_history: Vec::new(),
+                last_warning: None,
+                updated_unix_ms: unix_millis(),
+            });
         policy.trust_level = trust_level;
         policy.trust_state = trust_state;
-        policy.last_warning = if matches!(trust_state, GatewayTrustState::Warning | GatewayTrustState::Pending) {
+        policy.last_warning = if matches!(
+            trust_state,
+            GatewayTrustState::Warning | GatewayTrustState::Pending
+        ) {
             Some(reason.to_string())
         } else {
             None
@@ -2738,14 +2917,18 @@ pub enum RuntimeCommand {
 
 #[derive(Debug, Clone)]
 pub enum RuntimeEvent {
-    UriOpened { uri: VoidUri },
+    UriOpened {
+        uri: VoidUri,
+    },
     NameResolved {
         uri: VoidUri,
         target: ResolutionTarget,
         route: DnsResolvedRoute,
     },
     EnvelopeQueued,
-    PermissionRequested { permission: Permission },
+    PermissionRequested {
+        permission: Permission,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -2989,7 +3172,10 @@ fn gateway_cache_state(headers: &BTreeMap<String, String>) -> String {
         .unwrap_or_default();
     if cache_control.contains("no-store") || cache_control.contains("no-cache") {
         "bypass".to_string()
-    } else if cache_control.contains("max-age") || headers.contains_key("etag") || headers.contains_key("last-modified") {
+    } else if cache_control.contains("max-age")
+        || headers.contains_key("etag")
+        || headers.contains_key("last-modified")
+    {
         "cacheable".to_string()
     } else {
         "ephemeral".to_string()
@@ -2997,7 +3183,9 @@ fn gateway_cache_state(headers: &BTreeMap<String, String>) -> String {
 }
 
 fn gateway_render_mode(content_type: Option<&str>) -> String {
-    let content_type = content_type.unwrap_or("application/octet-stream").to_ascii_lowercase();
+    let content_type = content_type
+        .unwrap_or("application/octet-stream")
+        .to_ascii_lowercase();
     if content_type.starts_with("application/json") {
         "json".to_string()
     } else if content_type.starts_with("text/html") {
@@ -3030,7 +3218,10 @@ fn render_html_preview(body: &[u8]) -> String {
     let html = String::from_utf8_lossy(body);
     let title = extract_html_title(&html).unwrap_or_else(|| "untitled html document".to_string());
     let text = strip_html_tags(&html);
-    format!("html title={title}\n\n{}", truncate_text(&text, GATEWAY_RESPONSE_PREVIEW_LIMIT / 2))
+    format!(
+        "html title={title}\n\n{}",
+        truncate_text(&text, GATEWAY_RESPONSE_PREVIEW_LIMIT / 2)
+    )
 }
 
 fn extract_html_title(html: &str) -> Option<String> {
@@ -3105,7 +3296,12 @@ fn format_room_members(room: &void_chat::ChatRoomSnapshot) -> String {
 
     room.members
         .iter()
-        .map(|member| format!("{} {} last_seen={}", member.peer_id, member.presence, member.last_seen_unix_ms))
+        .map(|member| {
+            format!(
+                "{} {} last_seen={}",
+                member.peer_id, member.presence, member.last_seen_unix_ms
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -3180,7 +3376,11 @@ fn merge_surface_state_maps(
 }
 
 fn stored_surface_state(surface: &RuntimeUiSurfaceState) -> BTreeMap<String, String> {
-    merge_surface_state_maps(&surface.local_state, &surface.runtime_state, &surface.distributed_state)
+    merge_surface_state_maps(
+        &surface.local_state,
+        &surface.runtime_state,
+        &surface.distributed_state,
+    )
 }
 
 fn diff_state_keys(
@@ -3249,9 +3449,16 @@ mod tests {
         .unwrap();
 
         let (network, _inbox) = network_channels(8);
-        let runtime = VoidRuntime::new(NodeIdentity::generate(), dns, network, RuntimeConfig::default());
+        let runtime = VoidRuntime::new(
+            NodeIdentity::generate(),
+            dns,
+            network,
+            RuntimeConfig::default(),
+        );
         let event = runtime
-            .handle(RuntimeCommand::OpenUri("void://chat.void/rooms/main".parse().unwrap()))
+            .handle(RuntimeCommand::OpenUri(
+                "void://chat.void/rooms/main".parse().unwrap(),
+            ))
             .await
             .unwrap();
 
@@ -3287,7 +3494,12 @@ mod tests {
         .unwrap();
 
         let (network, _inbox) = network_channels(8);
-        let runtime = VoidRuntime::new(NodeIdentity::generate(), dns, network, RuntimeConfig::default());
+        let runtime = VoidRuntime::new(
+            NodeIdentity::generate(),
+            dns,
+            network,
+            RuntimeConfig::default(),
+        );
         let mut shell = RuntimeShell::load_or_create(&dns_dir, runtime).unwrap();
         let result = shell
             .open_uri("void://chat.void".parse().unwrap())
@@ -3326,7 +3538,12 @@ mod tests {
         .unwrap();
 
         let (network, _inbox) = network_channels(8);
-        let runtime = VoidRuntime::new(NodeIdentity::generate(), dns, network, RuntimeConfig::default());
+        let runtime = VoidRuntime::new(
+            NodeIdentity::generate(),
+            dns,
+            network,
+            RuntimeConfig::default(),
+        );
         let mut shell = RuntimeShell::load_or_create(&dns_dir, runtime).unwrap();
         let error = shell
             .open_uri("void://vault.void".parse().unwrap())
@@ -3334,7 +3551,11 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, RuntimeError::PermissionDenied { .. }));
-        assert!(shell.state().mounts.iter().any(|mount| mount.mount_state == MountState::Failed));
+        assert!(shell
+            .state()
+            .mounts
+            .iter()
+            .any(|mount| mount.mount_state == MountState::Failed));
     }
 
     #[tokio::test]
@@ -3362,7 +3583,12 @@ mod tests {
         let dns = Arc::new(PersistentVoidDns::load_or_create(&dns_dir).unwrap());
         let owner = PersistentNodeIdentity::load_or_create_dir(dns_dir.join("identity")).unwrap();
         let (network, _inbox) = network_channels(8);
-        let runtime = VoidRuntime::new(NodeIdentity::generate(), dns.clone(), network, RuntimeConfig::default());
+        let runtime = VoidRuntime::new(
+            NodeIdentity::generate(),
+            dns.clone(),
+            network,
+            RuntimeConfig::default(),
+        );
         let mut shell = RuntimeShell::load_or_create(&dns_dir, runtime).unwrap();
         shell
             .register_gateway(
@@ -3386,10 +3612,7 @@ mod tests {
                 "test trusted gateway",
             )
             .unwrap();
-        shell
-            .synchronize_registry_dns(&owner)
-            .await
-            .unwrap();
+        shell.synchronize_registry_dns(&owner).await.unwrap();
 
         let result = shell
             .open_uri("void://docs.gateway.void/github/openai".parse().unwrap())
@@ -3435,7 +3658,12 @@ mod tests {
         let dns = Arc::new(PersistentVoidDns::load_or_create(&dns_dir).unwrap());
         let owner = PersistentNodeIdentity::load_or_create_dir(dns_dir.join("identity")).unwrap();
         let (network, _inbox) = network_channels(8);
-        let runtime = VoidRuntime::new(NodeIdentity::generate(), dns.clone(), network, RuntimeConfig::default());
+        let runtime = VoidRuntime::new(
+            NodeIdentity::generate(),
+            dns.clone(),
+            network,
+            RuntimeConfig::default(),
+        );
         let mut shell = RuntimeShell::load_or_create(&dns_dir, runtime).unwrap();
         shell
             .register_gateway(
@@ -3462,7 +3690,11 @@ mod tests {
         shell.synchronize_registry_dns(&owner).await.unwrap();
 
         let result = shell
-            .open_uri("void://example.gateway.void/status?source=test".parse().unwrap())
+            .open_uri(
+                "void://example.gateway.void/status?source=test"
+                    .parse()
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -3478,7 +3710,12 @@ mod tests {
         }));
         assert!(shell.state().gateway_routes.iter().any(|route| {
             route.gateway_domain == "example.gateway.void"
-                && route.bridge.response.as_ref().map(|response| response.status) == Some(200)
+                && route
+                    .bridge
+                    .response
+                    .as_ref()
+                    .map(|response| response.status)
+                    == Some(200)
                 && route.bridge.snapshot_id.is_some()
         }));
         let snapshot_dir = dns_dir.join("gateway").join("example.gateway.void");
@@ -3491,7 +3728,12 @@ mod tests {
         let dns = Arc::new(PersistentVoidDns::load_or_create(&dns_dir).unwrap());
         let owner = PersistentNodeIdentity::load_or_create_dir(dns_dir.join("identity")).unwrap();
         let (network, _inbox) = network_channels(8);
-        let runtime = VoidRuntime::new(NodeIdentity::generate(), dns.clone(), network, RuntimeConfig::default());
+        let runtime = VoidRuntime::new(
+            NodeIdentity::generate(),
+            dns.clone(),
+            network,
+            RuntimeConfig::default(),
+        );
         let mut shell = RuntimeShell::load_or_create(&dns_dir, runtime).unwrap();
         shell
             .register_gateway(
@@ -3510,10 +3752,7 @@ mod tests {
                 "test denied gateway",
             )
             .unwrap();
-        shell
-            .synchronize_registry_dns(&owner)
-            .await
-            .unwrap();
+        shell.synchronize_registry_dns(&owner).await.unwrap();
 
         let error = shell
             .open_uri("void://unsafe.gateway.void".parse().unwrap())
@@ -3522,7 +3761,8 @@ mod tests {
 
         assert!(matches!(error, RuntimeError::GatewayTrustDenied(_)));
         assert!(shell.state().mounts.iter().any(|mount| {
-            mount.surface_kind == RuntimeSurfaceKind::Gateway && mount.mount_state == MountState::Failed
+            mount.surface_kind == RuntimeSurfaceKind::Gateway
+                && mount.mount_state == MountState::Failed
         }));
         assert!(shell.state().gateway_routes.iter().any(|route| {
             route.gateway_domain == "unsafe.gateway.void"
@@ -3535,4 +3775,3 @@ mod tests {
         std::env::temp_dir().join(format!("voidnet-runtime-{label}-{}", std::process::id()))
     }
 }
-

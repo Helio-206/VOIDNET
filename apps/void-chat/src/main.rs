@@ -12,6 +12,5 @@ async fn main() -> Result<()> {
     println!("message_transport=VOID Protocol peer frames");
     println!("encryption=planned aes-gcm payload layer");
 
-    Ok(()) 
+    Ok(())
 }
-

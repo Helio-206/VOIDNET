@@ -31,11 +31,7 @@ pub struct Bucket {
 }
 
 impl Bucket {
-    pub fn put(
-        &self,
-        key: impl AsRef<[u8]>,
-        value: impl AsRef<[u8]>,
-    ) -> Result<(), StorageError> {
+    pub fn put(&self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) -> Result<(), StorageError> {
         self.tree.insert(key, value.as_ref())?;
         Ok(())
     }
@@ -54,4 +50,3 @@ pub enum StorageError {
     #[error("VOID storage failed: {0}")]
     Sled(#[from] sled::Error),
 }
-

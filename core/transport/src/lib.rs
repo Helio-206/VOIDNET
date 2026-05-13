@@ -14,8 +14,9 @@ pub use event::{EventBus, RuntimeMeshAnnouncement, TransportEvent};
 pub use lifecycle::{LifecycleEngine, LifecycleTransition, NodeLifecycleState};
 pub use node::{run_transport_node, TransportNodeConfig};
 pub use topology::{
-    DnsTopologyInfo, MeshState, PeerConnectionState, PeerRecord, PeerRuntimeInfo, PeerTopology,
-    RuntimeShellTopologyInfo, SessionInfo, TransportHealth,
+    BootstrapPeerStatus, BootstrapState, ConnectionPath, DnsTopologyInfo, MeshState,
+    NetworkReachability, NetworkTopologyInfo, PeerConnectionState, PeerRecord, PeerRuntimeInfo,
+    PeerTopology, RuntimeShellTopologyInfo, SessionInfo, TransportHealth,
 };
 
 pub const DEFAULT_LISTEN_ADDR: &str = "/ip4/0.0.0.0/udp/0/quic-v1";
@@ -140,4 +141,3 @@ mod tests {
         assert!(is_quic_address(&addr));
     }
 }
-

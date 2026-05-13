@@ -1,8 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    time::Instant,
-};
+use std::{collections::BTreeMap, time::Instant};
 use thiserror::Error;
 use void_transport::event::TransportEvent;
 
@@ -107,7 +104,14 @@ pub fn render_terminal_surface(
         lines.push(format!("== {title} =="));
     }
 
-    render_node(&tree.root, 0, bindings, input_state, &mut lines, &mut actions)?;
+    render_node(
+        &tree.root,
+        0,
+        bindings,
+        input_state,
+        &mut lines,
+        &mut actions,
+    )?;
     lines.push(String::new());
     lines.push("Commands: set <input_id> <value> | press <index> | refresh | quit".to_string());
 
@@ -193,11 +197,7 @@ fn render_node(
                                 .cloned()
                                 .unwrap_or_else(|| format!("<{bind}:unbound>"))
                         } else {
-                            child
-                                .properties
-                                .get("value")
-                                .cloned()
-                                .unwrap_or_default()
+                            child.properties.get("value").cloned().unwrap_or_default()
                         };
                         parts.push(value.lines().next().unwrap_or_default().to_string());
                     }
@@ -213,15 +213,10 @@ fn render_node(
                     }
                     _ => {
                         let mut child_lines = Vec::new();
-                        render_node(
-                            child,
-                            0,
-                            bindings,
-                            input_state,
-                            &mut child_lines,
-                            actions,
-                        )?;
-                        if let Some(line) = child_lines.into_iter().find(|line| !line.trim().is_empty()) {
+                        render_node(child, 0, bindings, input_state, &mut child_lines, actions)?;
+                        if let Some(line) =
+                            child_lines.into_iter().find(|line| !line.trim().is_empty())
+                        {
                             parts.push(line.trim().to_string());
                         }
                     }
@@ -233,12 +228,12 @@ fn render_node(
         }
         SurfaceNodeKind::Text => {
             let value = if let Some(bind) = node.properties.get("bind") {
-                bindings.get(bind).cloned().unwrap_or_else(|| format!("<{bind}:unbound>"))
-            } else {
-                node.properties
-                    .get("value")
+                bindings
+                    .get(bind)
                     .cloned()
-                    .unwrap_or_default()
+                    .unwrap_or_else(|| format!("<{bind}:unbound>"))
+            } else {
+                node.properties.get("value").cloned().unwrap_or_default()
             };
             for line in value.lines() {
                 lines.push(format!("{indent}{line}"));
@@ -249,8 +244,15 @@ fn render_node(
         }
         SurfaceNodeKind::Input => {
             let id = required_property(&node.properties, "id")?;
-            let placeholder = node.properties.get("placeholder").cloned().unwrap_or_default();
-            let current = input_state.get(id).cloned().unwrap_or_else(|| placeholder.clone());
+            let placeholder = node
+                .properties
+                .get("placeholder")
+                .cloned()
+                .unwrap_or_default();
+            let current = input_state
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| placeholder.clone());
             lines.push(format!("{indent}{id}: {current}"));
         }
         SurfaceNodeKind::Button => {
@@ -375,7 +377,10 @@ struct Parser {
 
 impl Parser {
     fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, position: 0 }
+        Self {
+            tokens,
+            position: 0,
+        }
     }
 
     fn parse_document(mut self) -> Result<SurfaceDocument, RuntimeUiError> {
@@ -537,7 +542,10 @@ impl Parser {
         if self.position == self.tokens.len() {
             Ok(())
         } else {
-            Err(RuntimeUiError::UnexpectedToken(format!("{:?}", self.tokens[self.position])))
+            Err(RuntimeUiError::UnexpectedToken(format!(
+                "{:?}",
+                self.tokens[self.position]
+            )))
         }
     }
 
@@ -551,7 +559,10 @@ impl Parser {
 
     fn peek_attribute(&self) -> bool {
         matches!(
-            (self.tokens.get(self.position), self.tokens.get(self.position + 1)),
+            (
+                self.tokens.get(self.position),
+                self.tokens.get(self.position + 1)
+            ),
             (Some(Token::Ident(_)), Some(Token::Equals))
         )
     }
@@ -570,7 +581,10 @@ pub enum RuntimeUiError {
     #[error("unexpected token: {0}")]
     UnexpectedToken(String),
     #[error("expected identifier {expected}, got {actual}")]
-    ExpectedIdent { expected: &'static str, actual: String },
+    ExpectedIdent {
+        expected: &'static str,
+        actual: String,
+    },
     #[error("unknown VOID UI node {0}")]
     UnknownNode(String),
     #[error("unknown VOID UI property {0}")]

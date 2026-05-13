@@ -13,13 +13,11 @@ use void_dns::PersistentVoidDns;
 use void_identity::{default_node_dir, NodeIdentity, PersistentNodeIdentity};
 use void_protocol::VoidUri;
 use void_runtime::{
-    ui::RuntimeActionRequest, GatewayTrustLevel, GatewayTrustState, RuntimeConfig,
-    RuntimeError, RuntimeSessionState, RuntimeShell, RuntimeSurfaceKind, RuntimeSurfaceRegistration,
+    ui::RuntimeActionRequest, GatewayTrustLevel, GatewayTrustState, RuntimeConfig, RuntimeError,
+    RuntimeSessionState, RuntimeShell, RuntimeSurfaceKind, RuntimeSurfaceRegistration,
     RuntimeSurfaceView, VoidRuntime,
 };
-use void_transport::{
-    event::TransportEvent, network_channels, PeerConnectionState, PeerTopology,
-};
+use void_transport::{event::TransportEvent, network_channels, PeerConnectionState, PeerTopology};
 
 #[cfg(feature = "desktop-shell")]
 pub struct BrowserAppState {
@@ -44,7 +42,12 @@ impl BrowserSurface {
         let identity = PersistentNodeIdentity::load_or_create_dir(&data_dir)?;
         let dns = Arc::new(PersistentVoidDns::load_or_create(&data_dir)?);
         let (network, _inbox) = network_channels(32);
-        let runtime = VoidRuntime::new(NodeIdentity::generate(), dns, network, RuntimeConfig::default());
+        let runtime = VoidRuntime::new(
+            NodeIdentity::generate(),
+            dns,
+            network,
+            RuntimeConfig::default(),
+        );
         let mut shell = RuntimeShell::load_or_create(&data_dir, runtime)?;
         shell.reconcile_registry_owner(&identity.peer_id_string())?;
 
@@ -119,7 +122,8 @@ impl BrowserSurface {
         ) {
             Ok(result) => {
                 self.record_events(&result.events);
-                if let Ok((_, render_events)) = self.shell.render_surface_once(&route, input_state) {
+                if let Ok((_, render_events)) = self.shell.render_surface_once(&route, input_state)
+                {
                     self.record_events(&render_events);
                 }
                 self.last_error = None;
@@ -148,7 +152,11 @@ impl BrowserSurface {
         prompt_id: u64,
         allowed: bool,
     ) -> Result<BrowserSnapshot, BrowserError> {
-        let Some(index) = self.pending_prompts.iter().position(|prompt| prompt.id == prompt_id) else {
+        let Some(index) = self
+            .pending_prompts
+            .iter()
+            .position(|prompt| prompt.id == prompt_id)
+        else {
             return self.snapshot();
         };
         let prompt = self.pending_prompts.remove(index);
@@ -174,7 +182,11 @@ impl BrowserSurface {
                         domain,
                         &prompt.capability,
                         allowed,
-                        if allowed { "browser allow" } else { "browser deny" },
+                        if allowed {
+                            "browser allow"
+                        } else {
+                            "browser deny"
+                        },
                     )?;
                     self.shell.set_gateway_trust(
                         domain,
@@ -202,7 +214,11 @@ impl BrowserSurface {
                         domain,
                         if allowed { "trusted" } else { "untrusted" },
                         allowed,
-                        if allowed { "browser trust allow" } else { "browser trust deny" },
+                        if allowed {
+                            "browser trust allow"
+                        } else {
+                            "browser trust deny"
+                        },
                     )?;
                     self.shell.set_gateway_trust(
                         domain,
@@ -242,7 +258,12 @@ impl BrowserSurface {
                 topology
                     .peers
                     .values()
-                    .filter(|peer| matches!(peer.state, PeerConnectionState::Active | PeerConnectionState::Syncing))
+                    .filter(|peer| {
+                        matches!(
+                            peer.state,
+                            PeerConnectionState::Active | PeerConnectionState::Syncing
+                        )
+                    })
                     .count()
             })
             .unwrap_or_default();
@@ -260,7 +281,11 @@ impl BrowserSurface {
                 .iter()
                 .filter(|entry| entry.surface_kind == RuntimeSurfaceKind::Gateway)
                 .count(),
-            active_permissions: state.permissions.iter().filter(|grant| grant.allowed).count(),
+            active_permissions: state
+                .permissions
+                .iter()
+                .filter(|grant| grant.allowed)
+                .count(),
             gateway_bridge_sessions: state.gateway_bridge_sessions.len(),
             gateway_fetch_failures: state
                 .gateway_routes
@@ -332,7 +357,9 @@ impl BrowserSurface {
                     active_routes: state
                         .gateway_routes
                         .iter()
-                        .filter(|route| route.gateway_domain == gateway.gateway_domain && route.active)
+                        .filter(|route| {
+                            route.gateway_domain == gateway.gateway_domain && route.active
+                        })
                         .count(),
                     bridge_sessions: state
                         .gateway_bridge_sessions
@@ -391,7 +418,10 @@ impl BrowserSurface {
     fn record_runtime_error(&mut self, uri: &VoidUri, error: &RuntimeError) {
         self.event_log.push(BrowserEventRecord {
             observed_at_unix_ms: now_unix_ms(),
-            line: format!("[VOIDNET][BROWSER] NavigationFailed route={} error={error}", uri),
+            line: format!(
+                "[VOIDNET][BROWSER] NavigationFailed route={} error={error}",
+                uri
+            ),
         });
     }
 
@@ -402,7 +432,11 @@ impl BrowserSurface {
         });
     }
 
-    fn capture_permission_prompts(&mut self, uri: &VoidUri, error: &RuntimeError) -> Result<(), BrowserError> {
+    fn capture_permission_prompts(
+        &mut self,
+        uri: &VoidUri,
+        error: &RuntimeError,
+    ) -> Result<(), BrowserError> {
         self.capture_permission_prompts_from_route(&uri.to_string(), error)
     }
 
@@ -416,15 +450,16 @@ impl BrowserSurface {
                 surface_id,
                 missing_capabilities,
             } => {
-                let registration = find_registration_by_route(self.shell.state().registry.as_slice(), route)
-                    .or_else(|| {
-                        self.shell
-                            .state()
-                            .registry
-                            .iter()
-                            .find(|entry| entry.surface_id == *surface_id)
-                    })
-                    .cloned();
+                let registration =
+                    find_registration_by_route(self.shell.state().registry.as_slice(), route)
+                        .or_else(|| {
+                            self.shell
+                                .state()
+                                .registry
+                                .iter()
+                                .find(|entry| entry.surface_id == *surface_id)
+                        })
+                        .cloned();
                 let peer_owner = registration
                     .as_ref()
                     .map(|entry| entry.owner_peer_id.clone())
@@ -634,7 +669,10 @@ async fn browser_navigate(
     state: State<'_, BrowserAppState>,
 ) -> Result<BrowserSnapshot, String> {
     let mut browser = state.browser.lock().await;
-    browser.navigate(&route).await.map_err(|error| error.to_string())
+    browser
+        .navigate(&route)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(feature = "desktop-shell")]
